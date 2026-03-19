@@ -95,12 +95,74 @@ const generateLocalToken = async (req, res) => {
 
   const configs = {
     dev: {
-      user: { id: "20503", email: "aadityarajsinghmandloi104@gmail.com", permissions: ["get_agent", "create_agent", "clone_agent"] },
-      org: { id: "51548" }
+      user: {
+        id: "62514",
+        email: "human@gtwy.ai",
+        permissions: [
+          "create_c_company",
+          "update_c_company",
+          "add_user",
+          "get_authkeys",
+          "create_authkey",
+          "update_authkey",
+          "delete_authkey",
+          "get_authkey_ips",
+          "create_authkey_ip",
+          "update_authkey_ip",
+          "delete_authkey_ip",
+          "get_c_roles",
+          "create_c_roles",
+          "update_c_roles",
+          "delete_c_roles",
+          "update_c_user_role",
+          "update_c_user",
+          "view_c_user",
+          "assign_permissions",
+          "remove_c_user_from_c_company",
+          "view_agent",
+          "get_agent",
+          "publish_version",
+          "discard_version",
+          "clone_agent",
+          "create_agent"
+        ]
+      },
+      org: { id: "59402" }
     },
     prod: {
-      user: { id: "15629", email: "aadityarajsinghmandloi104@gmail.com", permissions: ["get_agent", "create_agent", "clone_agent"] },
-      org: { id: "51351" }
+      user: {
+        id: "61704",
+        email: "human@gtwy.ai",
+        permissions: [
+          "create_c_company",
+          "update_c_company",
+          "add_user",
+          "get_authkeys",
+          "create_authkey",
+          "update_authkey",
+          "delete_authkey",
+          "get_authkey_ips",
+          "create_authkey_ip",
+          "update_authkey_ip",
+          "delete_authkey_ip",
+          "get_c_roles",
+          "create_c_roles",
+          "update_c_roles",
+          "delete_c_roles",
+          "update_c_user_role",
+          "update_c_user",
+          "view_c_user",
+          "assign_permissions",
+          "remove_c_user_from_c_company",
+          "view_agent",
+          "get_agent",
+          "publish_version",
+          "discard_version",
+          "clone_agent",
+          "create_agent"
+        ]
+      },
+      org: { id: "60053" }
     }
   };
 
