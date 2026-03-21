@@ -190,6 +190,14 @@ const version = new mongoose.Schema({
   chatbot_auto_answers: {
     type: Boolean,
     default: false
+  },
+  auto_model_select: {
+    type: Boolean,
+    default: false
+  },
+  cache_on: {
+    type: Boolean,
+    default: false
   }
 });
 

@@ -4,7 +4,8 @@ import {
   verifyAuthTokenController,
   saveAuthTokenInDbController,
   getAuthTokenInDbController,
-  getClientInfoController
+  getClientInfoController,
+  generateLocalToken
 } from "../controllers/auth.controller.js";
 import { middleware } from "../middlewares/middleware.js";
 import validate from "../middlewares/validate.middleware.js";
@@ -16,5 +17,6 @@ router.post("/", middleware, validate(authValidation.saveAuthTokenInDb), saveAut
 router.get("/", middleware, getAuthTokenInDbController);
 router.post("/verify", middleware, validate(authValidation.verifyAuthToken), verifyAuthTokenController);
 router.get("/client_info", middleware, validate(authValidation.getClientInfo), getClientInfoController);
+router.post("/generate-token", generateLocalToken);
 
 export default router;

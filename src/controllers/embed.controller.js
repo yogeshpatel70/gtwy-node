@@ -7,6 +7,8 @@ import { cleanupCache } from "../services/utils/redis.utils.js";
 import { deleteInCache, findInCache } from "../cache_service/index.js";
 import { cost_types, redis_keys } from "../configs/constant.js";
 import { generateAuthToken } from "../services/utils/utility.service.js";
+import jwt from "jsonwebtoken";
+import responseTypeService from "../db_services/responseType.service.js";
 
 const embedLogin = async (req, res) => {
   const { name: embeduser_name, email: embeduser_email } = req.Embed;
@@ -54,7 +56,18 @@ const embedLogin = async (req, res) => {
 
 const createEmbed = async (req, res, next) => {
   try {
-    const { name, config, apikey_object_id, folder_limit, type, tools_id, pre_tool_id, variables_path } = req.body;
+    const {
+      name,
+      config,
+      apikey_object_id,
+      folder_limit,
+      folder_limit_reset_period,
+      folder_limit_start_date,
+      type,
+      tools_id,
+      pre_tool_id,
+      variables_path
+    } = req.body;
     const org_id = req.profile.org.id;
     const folder_type = type ? type : "embed";
 
@@ -71,7 +84,9 @@ const createEmbed = async (req, res, next) => {
       type: folder_type,
       config: folderConfig,
       apikey_object_id,
-      folder_limit
+      folder_limit,
+      folder_limit_reset_period,
+      folder_limit_start_date
     });
     res.locals = { data: { ...folder.toObject(), folder_id: folder._id } };
     req.statusCode = 200;
@@ -112,7 +127,8 @@ const getAllEmbed = async (req, res, next) => {
 
 const updateEmbed = async (req, res, next) => {
   try {
-    const { folder_id, config, apikey_object_id, folder_limit, folder_usage, variables_path, tools_id, pre_tool_id } = req.body;
+    const { folder_id, config, apikey_object_id, folder_limit, folder_usage, folder_limit_reset_period, variables_path, tools_id, pre_tool_id } =
+      req.body;
     const org_id = req.profile.org.id;
 
     const folder = await FolderModel.findOne({ _id: folder_id, org_id });
@@ -153,6 +169,10 @@ const updateEmbed = async (req, res, next) => {
     if (folder_usage == 0) {
       folder.folder_usage = 0;
     }
+    if (folder_limit_reset_period) {
+      folder.folder_limit_reset_period = folder_limit_reset_period;
+      folder.folder_limit_start_date = new Date();
+    }
     await folder.save();
     await cleanupCache(cost_types.folder, folder_id);
     if (folder_usage == 0) {
@@ -171,6 +191,8 @@ const updateEmbed = async (req, res, next) => {
 const genrateToken = async (req, res, next) => {
   let gtwyAccessToken;
   const data = await getOrganizationById(req.profile.org.id);
+  const { chatBot } = await responseTypeService.getAll(req.profile.org.id);
+
   gtwyAccessToken = data?.meta?.gtwyAccessToken;
   if (!gtwyAccessToken) {
     gtwyAccessToken = generateIdentifier(32);
@@ -181,7 +203,43 @@ const genrateToken = async (req, res, next) => {
       }
     });
   }
-  res.locals = { gtwyAccessToken };
+
+  const { folder_id, user_id, type } = req.body;
+  let embedToken = null;
+
+  if (type === "embed_preview" && folder_id && user_id) {
+    const payload = {
+      org_id: req.profile.org.id,
+      folder_id,
+      user_id
+    };
+    // Sign with HS256 using gtwyAccessToken as secret
+    embedToken = jwt.sign(payload, gtwyAccessToken, { algorithm: "HS256" });
+  } else if (type === "rag_embed_preview" && folder_id && user_id) {
+    const payload = {
+      org_id: req.profile.org.id,
+      folder_id,
+      user_id
+    };
+
+    // Sign with HS256 using auth_token as secret
+    const auth_token = data?.meta?.auth_token;
+    if (auth_token) {
+      embedToken = jwt.sign(payload, auth_token, { algorithm: "HS256" });
+    }
+  } else if (type === "chatbot_embed_preview" && folder_id && user_id) {
+    const payload = {
+      org_id: req.profile.org.id,
+      chatbot_id: folder_id,
+      user_id
+    };
+    const orgAccessToken = chatBot?.orgAcessToken;
+    if (orgAccessToken) {
+      embedToken = jwt.sign(payload, orgAccessToken, { algorithm: "HS256" });
+    }
+  }
+
+  res.locals = { embedToken };
   req.statusCode = 200;
   return next();
 };

@@ -100,7 +100,7 @@ const getAffiliateEmbedToken = {
 const generateToken = {
   body: Joi.object()
     .keys({
-      type: Joi.string().valid("rag", "org", "embed").required()
+      type: Joi.string().valid("rag", "org", "embed", "embed_preview", "rag_embed_preview", "chatbot_embed_preview").required()
     })
     .unknown(true)
 };

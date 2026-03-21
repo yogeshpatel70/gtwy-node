@@ -1,4 +1,4 @@
-import { generateIdentifier } from "../services/utils/utility.service.js";
+import { generateIdentifier, generateAuthToken } from "../services/utils/utility.service.js";
 import { getOrganizationById, updateOrganizationData, createProxyToken } from "../services/proxy.service.js";
 import auth_service from "../db_services/auth.service.js";
 import jwt from "jsonwebtoken";
@@ -85,4 +85,105 @@ const getClientInfoController = async (req, res, next) => {
   return next();
 };
 
-export { createAuthToken, saveAuthTokenInDbController, verifyAuthTokenController, getClientInfoController, getAuthTokenInDbController };
+const generateLocalToken = async (req, res) => {
+  const secretKey = req.headers["automation-token"];
+  if (!secretKey || secretKey !== process.env.AUTOMATION_TOKEN) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+
+  const { env } = req.body;
+
+  const configs = {
+    dev: {
+      user: {
+        id: "62514",
+        email: "human@gtwy.ai",
+        permissions: [
+          "create_c_company",
+          "update_c_company",
+          "add_user",
+          "get_authkeys",
+          "create_authkey",
+          "update_authkey",
+          "delete_authkey",
+          "get_authkey_ips",
+          "create_authkey_ip",
+          "update_authkey_ip",
+          "delete_authkey_ip",
+          "get_c_roles",
+          "create_c_roles",
+          "update_c_roles",
+          "delete_c_roles",
+          "update_c_user_role",
+          "update_c_user",
+          "view_c_user",
+          "assign_permissions",
+          "remove_c_user_from_c_company",
+          "view_agent",
+          "get_agent",
+          "publish_version",
+          "discard_version",
+          "clone_agent",
+          "create_agent"
+        ]
+      },
+      org: { id: "59402" }
+    },
+    prod: {
+      user: {
+        id: "61704",
+        email: "human@gtwy.ai",
+        permissions: [
+          "create_c_company",
+          "update_c_company",
+          "add_user",
+          "get_authkeys",
+          "create_authkey",
+          "update_authkey",
+          "delete_authkey",
+          "get_authkey_ips",
+          "create_authkey_ip",
+          "update_authkey_ip",
+          "delete_authkey_ip",
+          "get_c_roles",
+          "create_c_roles",
+          "update_c_roles",
+          "delete_c_roles",
+          "update_c_user_role",
+          "update_c_user",
+          "view_c_user",
+          "assign_permissions",
+          "remove_c_user_from_c_company",
+          "view_agent",
+          "get_agent",
+          "publish_version",
+          "discard_version",
+          "clone_agent",
+          "create_agent"
+        ]
+      },
+      org: { id: "60053" }
+    }
+  };
+
+  const config = configs[env];
+  if (!config) {
+    return res.status(400).json({ success: false, message: "env must be 'dev' or 'prod'" });
+  }
+
+  const [token, proxy_auth_token] = await Promise.all([
+    generateAuthToken(config.user, config.org),
+    createProxyToken({ user_id: config.user.id, company_id: config.org.id })
+  ]);
+
+  return res.status(200).json({ success: true, token, proxy_auth_token });
+};
+
+export {
+  createAuthToken,
+  saveAuthTokenInDbController,
+  verifyAuthTokenController,
+  getClientInfoController,
+  getAuthTokenInDbController,
+  generateLocalToken
+};

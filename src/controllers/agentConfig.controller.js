@@ -6,6 +6,7 @@ import { bridge_ids, new_agent_service } from "../configs/constant.js";
 import Helper from "../services/utils/helper.utils.js";
 import { ObjectId } from "mongodb";
 import conversationDbService from "../db_services/conversation.service.js";
+import { getUniqueNameAndSlug } from "../utils/agentConfig.utils.js";
 const { storeSystemPrompt, addBulkUserEntries } = conversationDbService;
 import { getDefaultValuesController } from "../services/utils/getDefaultValue.js";
 import { purgeRelatedBridgeCaches } from "../services/utils/redis.utils.js";
@@ -28,6 +29,7 @@ const createAgentController = async (req, res, next) => {
     let prompt =
       "Role: AI Bot\nObjective: Respond logically and clearly, maintaining a neutral, automated tone.\nGuidelines:\nIdentify the task or question first.\nProvide brief reasoning before the answer or action.\nKeep responses concise and contextually relevant.\nAvoid emotion, filler, or self-reference.\nUse examples or placeholders only when helpful.";
     let name = agents?.name || null;
+    let slugName = agents?.slugName || null;
     const meta = req.body.meta || null;
     let service = "openai";
     let model = "gpt-5-nano";
@@ -58,43 +60,15 @@ const createAgentController = async (req, res, next) => {
       }
 
       if (!useDefaultPrompt && folderPromptConfig.customPrompt) {
-        // CASE 2: Use Custom Prompt (Embed Object)
-        let embedFields = Array.isArray(folderPromptConfig.embedFields) ? folderPromptConfig.embedFields : [];
-
-        // 1. Ensure default hidden fields exist
-        const defaultFields = ["role", "goal", "instruction"];
-        const existingFieldNames = new Set(embedFields.map((f) => f.name));
-
-        defaultFields.forEach((name) => {
-          if (!existingFieldNames.has(name)) {
-            const type = name === "instruction" ? "textarea" : "input";
-            embedFields.push({ name, value: "", type, hidden: true });
-            existingFieldNames.add(name);
+        // CASE 2: Use Custom Prompt - build variables from non-hidden embedFields
+        const embedFields = Array.isArray(folderPromptConfig.embedFields) ? folderPromptConfig.embedFields : [];
+        const variables = embedFields.reduce((acc, field) => {
+          if (field.hidden === false) {
+            acc[field.name] = field.value;
           }
-        });
-
-        // 2. Extract new variables from customPrompt string
-        const variableRegex = /\{\{([^}]+)\}\}/g;
-        const matches = folderPromptConfig.customPrompt.matchAll(variableRegex);
-
-        for (const match of matches) {
-          const varName = match[1]?.trim();
-          if (varName && !existingFieldNames.has(varName)) {
-            embedFields.push({
-              name: varName,
-              value: "",
-              type: "input",
-              hidden: false
-            });
-            existingFieldNames.add(varName);
-          }
-        }
-
-        prompt = {
-          customPrompt: folderPromptConfig.customPrompt,
-          embedFields: embedFields,
-          useDefaultPrompt: false
-        };
+          return acc;
+        }, {});
+        prompt = { ...variables };
       }
     }
 
@@ -134,36 +108,9 @@ const createAgentController = async (req, res, next) => {
       }
     }
 
-    name = name || "untitled_agent";
-
-    const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const nameRegex = new RegExp(`^${escapeRegExp(name)}(_(\\d+))?$`);
-
-    let name_next_count = 1;
-    let slug_next_count = 1;
-
-    for (const agent of all_agent) {
-      // Check Name Collision
-      const nameMatch = agent.name.match(nameRegex);
-      if (nameMatch) {
-        const num = nameMatch[2] ? parseInt(nameMatch[2], 10) : 0;
-        if (num >= name_next_count) {
-          name_next_count = num + 1;
-        }
-      }
-
-      // Check Slug Collision
-      const slugMatch = agent.slugName.match(nameRegex);
-      if (slugMatch) {
-        const num = slugMatch[2] ? parseInt(slugMatch[2], 10) : 0;
-        if (num >= slug_next_count) {
-          slug_next_count = num + 1;
-        }
-      }
-    }
-
-    const slugName = `${name}_${slug_next_count}`;
-    name = `${name}_${name_next_count}`;
+    const nameSlugData = getUniqueNameAndSlug(name, all_agent);
+    slugName = slugName || nameSlugData.slugName;
+    name = nameSlugData.name;
 
     // Construct model data based on model configuration
     const keys_to_update = [
@@ -225,8 +172,10 @@ const createAgentController = async (req, res, next) => {
       }
     }
 
-    const agent_limit = agents.bridge_limit || 0;
-    const agent_usage = agents.bridge_usage || 0;
+    const agent_limit = agents.bridge_limit;
+    const agent_usage = agents.bridge_usage;
+    const agent_limit_reset_period = agents.bridge_limit_reset_period;
+    const agent_limit_start_date = agents.bridge_limit_start_date;
 
     const result = await ConfigurationServices.createAgent({
       configuration: model_data,
@@ -241,6 +190,8 @@ const createAgentController = async (req, res, next) => {
       fall_back: fall_back,
       bridge_limit: agent_limit,
       bridge_usage: agent_usage,
+      bridge_limit_reset_period: agent_limit_reset_period,
+      bridge_limit_start_date: agent_limit_start_date,
       bridge_status: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -258,9 +209,11 @@ const createAgentController = async (req, res, next) => {
     };
     req.statusCode = 200;
 
-    sendAgentCreatedWebhook(updated_agent_result.result, org_id).catch((err) => {
-      console.error("Webhook failed:", err);
-    });
+    if (!folder_id) {
+      sendAgentCreatedWebhook(updated_agent_result.result, org_id).catch((err) => {
+        console.error("Webhook failed:", err);
+      });
+    }
 
     return next();
   } catch (e) {
@@ -353,7 +306,10 @@ const updateAgentController = async (req, res, next) => {
     "guardrails",
     "web_search_filters",
     "gtwy_web_search_filters",
-    "chatbot_auto_answers"
+    "chatbot_auto_answers",
+    "auto_model_select",
+    "cache_on",
+    "pre_tools"
   ];
 
   for (const field of simple_fields) {
@@ -364,6 +320,10 @@ const updateAgentController = async (req, res, next) => {
 
   if (body.bridge_limit !== undefined) update_fields.bridge_limit = body.bridge_limit;
   if (body.bridge_usage !== undefined) update_fields.bridge_usage = body.bridge_usage;
+  if (body.bridge_limit_reset_period !== undefined) {
+    update_fields.bridge_limit_reset_period = body.bridge_limit_reset_period;
+    update_fields.bridge_limit_start_date = new Date();
+  }
 
   if (page_config) update_fields.page_config = page_config;
   if (web_search_filter !== undefined) update_fields.web_search_filters = web_search_filter;

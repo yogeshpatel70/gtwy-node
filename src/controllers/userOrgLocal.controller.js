@@ -64,7 +64,7 @@ const updateUserDetails = async (req, res, next) => {
 const removeUsersFromOrg = async (req, res, next) => {
   const { user_id: userId } = req.body;
   const companyId = req.profile.org.id;
-  const featureId = `${process.env.PROXY_USER_REFERENCE_ID}`;
+  const featureId = `${process.env.PUBLIC_REFERENCEID}`;
 
   const user_detail = await getProxyDetails({
     company_id: companyId,

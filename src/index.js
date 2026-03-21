@@ -2,7 +2,7 @@ import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import { configDotenv } from "dotenv";
-import "./atatus.js";
+import "./grafana.js";
 import "./consumers/index.js";
 import "./services/cache.service.js";
 import configRoutes from "./routes/config.routes.js";

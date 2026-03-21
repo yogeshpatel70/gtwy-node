@@ -20,10 +20,13 @@ const clearRedisCache = async (req, res, next) => {
     req.statusCode = 200;
     return next();
   } else {
-    // Clear all keys with prefix
-    // scanCacheKeys('*') returns keys without prefix
+    // Clear all keys except protected patterns
+    const protectedPatterns = ["bridgeusedcost_", "folderusedcost_", "apikeyusedcost_", "blacklist:"];
+
     const keys = await scanCacheKeys("*");
-    const keysToDelete = keys.filter((key) => !key.startsWith("blacklist:"));
+    const keysToDelete = keys.filter((key) => {
+      return !protectedPatterns.some((pattern) => key.includes(pattern));
+    });
 
     if (keysToDelete && keysToDelete.length > 0) {
       await deleteInCache(keysToDelete);
@@ -74,6 +77,15 @@ const generateToken = async (req, res, next) => {
       return createOrgToken(req, res, next);
 
     case "embed":
+      return embedController.genrateToken(req, res, next);
+
+    case "embed_preview":
+      return embedController.genrateToken(req, res, next);
+
+    case "rag_embed_preview":
+      return embedController.genrateToken(req, res, next);
+
+    case "chatbot_embed_preview":
       return embedController.genrateToken(req, res, next);
 
     default:
