@@ -12,7 +12,9 @@ import { saveConversationHistory, saveOrchestratorHistory, saveBatchHistory, upd
 import { saveMetrics, saveFlatMetrics } from "../services/logQueue/saveMetrics.service.js";
 
 async function processLogQueueMessage(messages) {
-  await saveSubThreadIdAndName(messages["save_sub_thread_id_and_name"]);
+  if (messages["save_sub_thread_id_and_name"]) {
+    await saveSubThreadIdAndName(messages["save_sub_thread_id_and_name"]);
+  }
 
   if (messages["save_history"]) {
     await saveConversationHistory(messages["save_history"]);
