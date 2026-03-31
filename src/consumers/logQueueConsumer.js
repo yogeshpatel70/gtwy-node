@@ -8,9 +8,34 @@ import { saveToAgentMemory } from "../services/logQueue/saveToAgentMemory.servic
 import { saveFilesToRedis } from "../services/logQueue/saveFilesToRedis.service.js";
 import { sendApiHitEvent } from "../services/logQueue/sendApiHitEvent.service.js";
 import { broadcastResponseWebhook } from "../services/logQueue/broadcastResponseWebhook.service.js";
+import { saveConversationHistory, saveOrchestratorHistory, saveBatchHistory, updateBatchHistory } from "../services/logQueue/saveHistory.service.js";
+import { saveMetrics, saveFlatMetrics } from "../services/logQueue/saveMetrics.service.js";
 
 async function processLogQueueMessage(messages) {
-  await saveSubThreadIdAndName(messages["save_sub_thread_id_and_name"]);
+  if (messages["save_sub_thread_id_and_name"]) {
+    await saveSubThreadIdAndName(messages["save_sub_thread_id_and_name"]);
+  }
+
+  if (messages["save_history"]) {
+    await saveConversationHistory(messages["save_history"]);
+    await saveMetrics(messages["save_history"]);
+  }
+
+  if (messages["save_orchestrator_history"]) {
+    await saveOrchestratorHistory(messages["save_orchestrator_history"]);
+  }
+
+  if (messages["save_batch_history"]) {
+    await saveBatchHistory(messages["save_batch_history"]);
+  }
+
+  if (messages["update_batch_history"]) {
+    await updateBatchHistory(messages["update_batch_history"]);
+  }
+
+  if (messages["save_batch_metrics"]) {
+    await saveFlatMetrics(messages["save_batch_metrics"]);
+  }
 
   if (messages.type === "image") {
     return;
@@ -29,16 +54,19 @@ async function processLogQueueMessage(messages) {
     });
   }
 
-  if (!messages["validateResponse"]?.alert_flag) {
-    await sendApiHitEvent({
-      message_id: messages["validateResponse"]?.message_id,
-      org_id: messages["validateResponse"]?.org_id
-    });
+  if (messages["validateResponse"]) {
+    if (!messages["validateResponse"]?.alert_flag) {
+      await sendApiHitEvent({
+        message_id: messages["validateResponse"]?.message_id,
+        org_id: messages["validateResponse"]?.org_id
+      });
+    }
+    await validateResponse(messages["validateResponse"]);
   }
 
-  await validateResponse(messages["validateResponse"]);
-  await totalTokenCalculation(messages["total_token_calculation"]);
-
+  if (messages["total_token_calculation"]) {
+    await totalTokenCalculation(messages["total_token_calculation"]);
+  }
   if (messages["check_handle_gpt_memory"]?.gpt_memory) {
     await handleGptMemory(messages["handle_gpt_memory"]);
   }
@@ -47,8 +75,9 @@ async function processLogQueueMessage(messages) {
     await chatbotSuggestions(messages["chatbot_suggestions"]);
   }
 
-  await saveFilesToRedis(messages["save_files_to_redis"]);
-
+  if (messages["save_files_to_redis"]) {
+    await saveFilesToRedis(messages["save_files_to_redis"]);
+  }
   if (messages.broadcast_response_webhook) {
     await broadcastResponseWebhook(messages["broadcast_response_webhook"]);
   }
