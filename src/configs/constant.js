@@ -53,6 +53,14 @@ const redis_keys = {
   last_transffered_agent_: "last_transffered_agent_"
 };
 
+const embed_cache = {
+  keys: {
+    folder: (folderId) => `embed:folder_${folderId}`,
+    org: (orgId) => `embed:org_${orgId}`,
+    user: (userId, orgId) => `embed:user_${userId}:${orgId}`
+  }
+};
+
 const cost_types = {
   bridge: "bridge",
   folder: "folder",
@@ -80,7 +88,7 @@ const new_agent_service = {
   deepgram: { model: "nova-3", default_name: "Deepgram"}
 };
 
-export { collectionNames, bridge_ids, redis_keys, cost_types, prebuilt_prompt_bridge_id, new_agent_service };
+export { collectionNames, bridge_ids, redis_keys, cost_types, prebuilt_prompt_bridge_id, new_agent_service, embed_cache };
 
 export const AI_OPERATION_CONFIG = {
   optimize_prompt: {
