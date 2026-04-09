@@ -2,13 +2,13 @@ import dotenv from "dotenv";
 dotenv.config();
 // In this file you can configure migrate-mongo
 
-const config = {
+export default {
   mongodb: {
     // TODO Change (or review) the url to your MongoDB:
     url: process.env.MONGODB_CONNECTION_URI,
 
     // TODO Change this to your database name:
-    databaseName: process.env.DB_NAME,
+    databaseName: process.env.MONGODB_DATABASE_NAME,
 
     options: {
       // useNewUrlParser: true, // (not needed anymore in mongodb driver 4.x+)
@@ -40,5 +40,3 @@ const config = {
   // Don't change this, unless you know what you're doing
   moduleSystem: "esm"
 };
-
-export default config;
