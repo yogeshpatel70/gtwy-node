@@ -171,9 +171,8 @@ const version = new mongoose.Schema({
     type: Object,
     default: {
       maximum_iterations: 3,
-      responseStyle: "default",
+      responseStyle: "",
       tone: "",
-      tonePrompt: "",
       response_format: { type: "default", cred: {} },
       responseStylePrompt: "",
       guardrails: {

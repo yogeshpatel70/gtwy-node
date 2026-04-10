@@ -100,7 +100,8 @@ async function findConversationLogsByIds(org_id, bridge_id, thread_id, sub_threa
       org_id: org_id,
       bridge_id: bridge_id,
       thread_id: thread_id,
-      sub_thread_id: sub_thread_id
+      sub_thread_id: sub_thread_id,
+      batch_data: { [Sequelize.Op.eq]: null }
     };
 
     if (version_id) {
@@ -152,7 +153,8 @@ async function findRecentThreadsByBridgeId(org_id, bridge_id, filters, user_feed
     // Build where conditions
     const whereConditions = {
       org_id: org_id,
-      bridge_id: bridge_id
+      bridge_id: bridge_id,
+      batch_data: { [Sequelize.Op.eq]: null }
     };
 
     if (user_feedback !== "all" && user_feedback !== "undefined") {
@@ -161,10 +163,6 @@ async function findRecentThreadsByBridgeId(org_id, bridge_id, filters, user_feed
 
     if (error !== "false") {
       whereConditions.error = error;
-    }
-
-    if (type === "batch") {
-      whereConditions.batch_data = { [Sequelize.Op.ne]: null };
     }
 
     if (version_id) {
