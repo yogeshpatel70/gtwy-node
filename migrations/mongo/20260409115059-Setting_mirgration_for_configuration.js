@@ -38,7 +38,7 @@ export const up = async (db) => {
       settings.responseStyle = doc.configuration.responseStyle;
       hasSettingsUpdate = true;
     } else if (!doc.settings?.responseStyle) {
-      settings.responseStyle = "default";
+      settings.responseStyle = "";
       hasSettingsUpdate = true;
     }
 
@@ -50,27 +50,11 @@ export const up = async (db) => {
       hasSettingsUpdate = true;
     }
 
-    if (doc.configuration?.tonePrompt) {
-      settings.tonePrompt = doc.configuration.tonePrompt;
-      hasSettingsUpdate = true;
-    } else if (!doc.settings?.tonePrompt) {
-      settings.tonePrompt = "";
-      hasSettingsUpdate = true;
-    }
-
     if (doc.configuration?.response_format) {
       settings.response_format = doc.configuration.response_format;
       hasSettingsUpdate = true;
     } else if (!doc.settings?.response_format) {
       settings.response_format = { type: "default", cred: {} };
-      hasSettingsUpdate = true;
-    }
-
-    if (doc.configuration?.responseStylePrompt) {
-      settings.responseStylePrompt = doc.configuration.responseStylePrompt;
-      hasSettingsUpdate = true;
-    } else if (!doc.settings?.responseStylePrompt) {
-      settings.responseStylePrompt = "";
       hasSettingsUpdate = true;
     }
 
@@ -114,9 +98,7 @@ export const up = async (db) => {
       users: "",
       "configuration.responseStyle": "",
       "configuration.tone": "",
-      "configuration.tonePrompt": "",
       "configuration.response_format": "",
-      "configuration.responseStylePrompt": "",
       guardrails: "",
       fall_back: "",
       tool_call_count: ""
