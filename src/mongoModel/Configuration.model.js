@@ -258,8 +258,8 @@ const configuration = new mongoose.Schema({
       maximum_iterations: 3,
       publicUsers: [],
       editAccess: [],
-      tone: "",
-      responseStyle: "",
+      tone: {},
+      responseStyle: {},
       response_format: { type: "default", cred: {} },
       guardrails: {
         is_enabled: false,
