@@ -258,11 +258,9 @@ const configuration = new mongoose.Schema({
       maximum_iterations: 3,
       publicUsers: [],
       editAccess: [],
-      responseStyle: "default",
-      tone: "",
-      tonePrompt: "",
+      tone: {},
+      responseStyle: {},
       response_format: { type: "default", cred: {} },
-      responseStylePrompt: "",
       guardrails: {
         is_enabled: false,
         guardrails_configuration: {},
