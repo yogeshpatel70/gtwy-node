@@ -42,9 +42,11 @@ const ensureChatbotPreview = async (org_id, user_id, agents) => {
   const model_data = {
     type: "chat",
     model: "gpt-5-nano",
-    response_format: { type: "default", cred: {} },
     is_rich_text: false,
-    prompt: prompt
+    prompt: prompt,
+    response_type: "default",
+    reasoning: "default",
+    max_tokens: "default"
   };
 
   const result = await ConfigurationServices.createAgent({
@@ -57,6 +59,23 @@ const ensureChatbotPreview = async (org_id, user_id, agents) => {
     gpt_memory: true,
     folder_id: null,
     user_id: user_id,
+    settings: {
+      maximum_iterations: 3,
+      publicUsers: [],
+      editAccess: [],
+      response_format: {
+        type: "default"
+      },
+      guardrails: {
+        is_enabled: false,
+        guardrails_custom_prompt: ""
+      },
+      fall_back: {
+        is_enable: false,
+        service: "",
+        model: ""
+      }
+    },
     bridge_status: 1,
     createdAt: new Date(),
     updatedAt: new Date()
