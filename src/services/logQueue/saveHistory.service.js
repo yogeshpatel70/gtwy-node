@@ -41,7 +41,8 @@ async function saveConversationHistory(historyEntries) {
       firstAttemptError: data.firstAttemptError ?? null,
       finish_reason: data.finish_reason ?? null,
       parent_id: data.parent_id ?? null,
-      child_id: data.child_id ?? null
+      child_id: data.child_id ?? null,
+      plans: data.plans ?? null
     });
   } catch (err) {
     logger.error(`Error saving conversation log (message_id=${data.message_id}): ${err.message}`);
@@ -85,7 +86,8 @@ async function saveOrchestratorHistory(orchestratorLogData) {
       latency: orchestratorLogData.latency ?? null,
       firstAttemptError: orchestratorLogData.firstAttemptError ?? null,
       finish_reason: orchestratorLogData.finish_reason ?? null,
-      agents_path: orchestratorLogData.agents_path ?? []
+      agents_path: orchestratorLogData.agents_path ?? [],
+      plans: orchestratorLogData.plans ?? null
     });
   } catch (err) {
     logger.error(`Error saving orchestrator history (thread_id=${orchestratorLogData.thread_id}): ${err.message}`);
@@ -127,7 +129,8 @@ async function saveBatchHistory(entries) {
       tokens: data.tokens ?? null,
       variables: data.variables ?? null,
       latency: null,
-      batch_data: data.batch_data ?? null
+      batch_data: data.batch_data ?? null,
+      plans: data.plans ?? null
     }));
 
     await models.pg.conversation_logs.bulkCreate(rows);
