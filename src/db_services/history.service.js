@@ -214,6 +214,10 @@ async function findRecentThreadsByBridgeId(org_id, bridge_id, filters, user_feed
             }
             orConditions.push(Sequelize.literal(varCondition));
           }
+        } else if (col === "batch_id") {
+          if (!keyword || keyword === "") continue;
+          const escapedBatch = keyword.replace(/'/g, "''");
+          orConditions.push(Sequelize.literal(`"conversation_logs"."batch_data"->>'batch_id' ILIKE '%${escapedBatch}%'`));
         } else {
           if (!keyword || keyword === "") continue;
           if (searchableColumns.includes(col)) {
@@ -232,7 +236,8 @@ async function findRecentThreadsByBridgeId(org_id, bridge_id, filters, user_feed
             ...searchableColumns.map((col) => ({ [col]: { [Sequelize.Op.iLike]: `%${filters.keyword}%` } })),
             Sequelize.literal(
               `EXISTS (SELECT 1 FROM jsonb_each_text(COALESCE("conversation_logs"."variables", '{}'::jsonb)) AS kv WHERE jsonb_typeof(COALESCE("conversation_logs"."variables", 'null'::jsonb)) = 'object' AND kv.value ILIKE '%${escapedKeyword}%')`
-            )
+            ),
+            Sequelize.literal(`"conversation_logs"."batch_data"->>'batch_id' ILIKE '%${escapedKeyword}%'`)
           ]
         }
       ];
@@ -564,6 +569,7 @@ async function findThreadHistoryFormatted(org_id, thread_id, bridge_id, sub_thre
           urls: null,
           message_id: log.message_id + "_llm",
           fallback_model: typeof log.fallback_model === "object" ? JSON.stringify(log.fallback_model) : log.fallback_model || "",
+          plans: log.plans || null,
           error: ""
         });
       }
@@ -649,6 +655,7 @@ async function createConversationLog(payload) {
 
     transformedPayload.prompt = payload.prompt || null;
     transformedPayload.service = payload.service || null;
+    transformedPayload.plans = payload.plans || null;
 
     const result = await models.pg.conversation_logs.create(transformedPayload);
     return result;
@@ -692,6 +699,7 @@ async function findChatbotThreadHistory(org_id, thread_id, bridge_id, sub_thread
       "bridge_id",
       "user_urls",
       "llm_urls",
+      "plans",
       "created_at",
       "updated_at"
     ],
