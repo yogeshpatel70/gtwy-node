@@ -91,12 +91,26 @@ const createAgentController = async (req, res, next) => {
     let agent_data = {};
 
     if (purpose) {
-      const environment = String(process.env.ENVIRONMENT || "").toUpperCase() === "PRODUCTION" ? "prod" : "test";
+      const environment = String(process.env.ENVIROMENT || "").toUpperCase() === "PRODUCTION" ? "prod" : "test";
+      let viasocket_embed_user_id = org_id.toString();
+      if (user_id && folder_id) {
+        viasocket_embed_user_id = viasocket_embed_user_id + "_" + folder_id + "_" + user_id;
+      }
+      const viasocket_embed_token = Helper.generate_token(
+        {
+          org_id: process.env.ORG_ID,
+          project_id: process.env.PROJECT_ID,
+          user_id: viasocket_embed_user_id
+        },
+        process.env.ACCESS_KEY
+      );
+
       const variables = {
         purpose: purpose,
         environment: environment,
         all_bridge_names: all_agent_name,
         token: req.headers.authorization,
+        viasocket_embed_token: viasocket_embed_token,
         fields:
           folder_data && folder_data?.config?.prompt?.useDefaultPrompt === false
             ? folder_data?.config?.prompt?.embedFields
@@ -118,28 +132,6 @@ const createAgentController = async (req, res, next) => {
     const { name: uniqueName, slugName: uniqueSlugName } = await ConfigurationServices.getUniqueAgentNameAndSlug(org_id, name);
     slugName = uniqueSlugName || slugName;
     name = uniqueName || name;
-
-    // Construct model data based on model configuration
-    const keys_to_update = [
-      "model",
-      "creativity_level",
-      "max_tokens",
-      "probability_cutoff",
-      "log_probability",
-      "repetition_penalty",
-      "novelty_penalty",
-      "n",
-      "response_count",
-      "additional_stop_sequences",
-      "stream",
-      "stop",
-      "response_type",
-      "tool_choice",
-      "size",
-      "quality",
-      "style",
-      "reasoning"
-    ];
 
     // Use AI configuration if purpose exists and valid, otherwise build manually
     let model_data;
@@ -171,10 +163,8 @@ const createAgentController = async (req, res, next) => {
         const modelObj = modelConfigDocument[serviceLower][model];
         const configurations = modelObj.configuration || {};
 
-        for (const key of keys_to_update) {
-          if (configurations[key]) {
-            model_data[key] = key === "model" ? configurations[key].default : "default";
-          }
+        for (const key in configurations) {
+          model_data[key] = key === "model" ? configurations[key].default : "default";
         }
       }
 
