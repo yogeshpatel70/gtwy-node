@@ -140,6 +140,7 @@ const ConfigurationSchema = new mongoose.Schema({
     type: { type: String },
     vision: { type: Boolean },
     tools: { type: Boolean },
+    web_search: { type: Boolean },
     specification: {
       input_cost: { type: Number },
       output_cost: { type: Number },
