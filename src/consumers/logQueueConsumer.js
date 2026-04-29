@@ -52,7 +52,7 @@ async function processLogQueueMessage(messages) {
   }
 
   const agent_memory_data = messages.save_agent_memory || {};
-  if (agent_memory_data.chatbot_auto_answers) {
+  if (agent_memory_data.cache_on) {
     await saveToAgentMemory({
       user_question: agent_memory_data.user_message || "",
       assistant_answer: agent_memory_data.assistant_message || "",

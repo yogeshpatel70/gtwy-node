@@ -20,6 +20,7 @@ async function saveConversationHistory(historyEntries) {
       updated_llm_message: data.updated_llm_message ?? null,
       prompt: data.prompt ?? null,
       error: data.error ?? null,
+      is_cached: data.is_cached ?? false,
       user_feedback: data.user_feedback ?? 0,
       tools_call_data: data.tools_call_data ?? [],
       message_id: data.message_id ?? null,
