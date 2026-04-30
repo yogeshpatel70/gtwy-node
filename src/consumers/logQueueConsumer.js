@@ -15,7 +15,6 @@ import {
   updateBatchHistory,
   updateConversationHistory
 } from "../services/logQueue/saveHistory.service.js";
-import { saveMetrics, saveFlatMetrics } from "../services/logQueue/saveMetrics.service.js";
 
 async function processLogQueueMessage(messages) {
   if (messages["save_history"]) {
@@ -32,7 +31,6 @@ async function processLogQueueMessage(messages) {
       });
     }
     await saveConversationHistory(messages["save_history"]);
-    await saveMetrics(messages["save_history"]);
   }
 
   if (messages["update_history"]) {
@@ -65,10 +63,6 @@ async function processLogQueueMessage(messages) {
 
   if (messages["update_batch_history"]) {
     await updateBatchHistory(messages["update_batch_history"]);
-  }
-
-  if (messages["save_batch_metrics"]) {
-    await saveFlatMetrics(messages["save_batch_metrics"]);
   }
 
   if (messages.type === "image") {
