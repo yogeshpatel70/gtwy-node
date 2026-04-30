@@ -66,13 +66,13 @@ function transformAgentVariableToToolCallFormat(inputData) {
           description: "",
           enum: [],
           required_params: [],
-          parameter: {}
+          properties: {}
         };
-      } else if (!current[part].parameter) {
-        current[part].parameter = {};
+      } else if (!current[part].properties) {
+        current[part].properties = {};
       }
 
-      current = current[part].parameter;
+      current = current[part].properties;
     }
 
     const finalKey = parts[parts.length - 1];
@@ -96,7 +96,7 @@ function transformAgentVariableToToolCallFormat(inputData) {
       for (let i = 0; i < parts.length - 1; i++) {
         let currentLevel = obj;
         for (let j = 0; j < i; j++) {
-          currentLevel = currentLevel[parts[j]].parameter;
+          currentLevel = currentLevel[parts[j]].properties;
         }
 
         const parentKey = parts[i];
