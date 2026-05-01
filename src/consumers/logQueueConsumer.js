@@ -18,7 +18,7 @@ import {
 
 async function processLogQueueMessage(messages) {
   if (messages["save_history"]) {
-    const conv = messages["save_history"]?.[0]?.conversation_log_data;
+    const conv = messages["save_history"]?.[0];
     if (conv?.sub_thread_id) {
       await saveSubThreadIdAndName({
         org_id: conv.org_id,

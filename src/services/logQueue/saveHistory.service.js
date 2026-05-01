@@ -9,7 +9,7 @@ import logger from "../../logger.js";
  * @param {Array} historyEntries - Array of history payload objects built by Python
  */
 async function saveConversationHistory(historyEntries) {
-  const data = historyEntries?.[0]?.conversation_log_data;
+  const data = historyEntries?.[0];
   if (!data) return;
 
   try {
