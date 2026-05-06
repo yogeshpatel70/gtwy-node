@@ -3,7 +3,7 @@ function validateRequiredParams(dataToUpdate) {
     return dataToUpdate;
   }
 
-  if (Array.isArray(dataToUpdate.required)) {
+  if (Array.isArray(dataToUpdate.required_params)) {
     const validKeys = new Set();
 
     if (dataToUpdate.properties && typeof dataToUpdate.properties === "object") {
@@ -16,7 +16,7 @@ function validateRequiredParams(dataToUpdate) {
       Object.keys(dataToUpdate.fields).forEach((key) => validKeys.add(key));
     }
 
-    dataToUpdate.required = dataToUpdate.required.filter((key) => validKeys.has(key));
+    dataToUpdate.required_params = dataToUpdate.required_params.filter((key) => validKeys.has(key));
   }
 
   for (const key in dataToUpdate) {
