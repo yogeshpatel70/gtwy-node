@@ -60,9 +60,9 @@ class Helper {
     return response;
   }
 
-  static traverseBody(body, path = [], paths = [], fields = {}, required = []) {
+  static traverseBody(body, path = [], paths = [], fields = {}, required_params = []) {
     if (!body) {
-      return { paths, fields, required };
+      return { paths, fields, required_params };
     }
 
     for (const key in body) {
@@ -75,8 +75,8 @@ class Helper {
             description: "",
             type: "object",
             enum: [],
-            required: [],
-            properties: {}
+            required_params: [],
+            parameter: {}
           };
         }
       }
@@ -85,65 +85,65 @@ class Helper {
         if (path.length > 0) {
           let parentObj = fields[path[0]];
           for (let i = 1; i < path.length; i++) {
-            parentObj = parentObj.properties[path[i]];
+            parentObj = parentObj.parameter[path[i]];
           }
 
-          if (!parentObj.required.includes(key)) {
-            parentObj.required.push(key);
+          if (!parentObj.required_params.includes(key)) {
+            parentObj.required_params.push(key);
           }
 
-          if (!parentObj.properties[key]) {
-            parentObj.properties[key] = {
+          if (!parentObj.parameter[key]) {
+            parentObj.parameter[key] = {
               description: "",
               type: "object",
               enum: [],
-              required: [],
-              properties: {}
+              required_params: [],
+              parameter: {}
             };
           }
         }
-        Helper.traverseBody(value, currentPath, paths, fields, required);
+        Helper.traverseBody(value, currentPath, paths, fields, required_params);
       } else if (value === "your_value_here") {
         paths.push(currentPath.join("."));
-        if (!required.includes(key)) {
-          required.push(key);
+        if (!required_params.includes(key)) {
+          required_params.push(key);
         }
 
         if (path.length > 0) {
           let parentObj = fields[path[0]];
           for (let i = 1; i < path.length; i++) {
-            parentObj = parentObj.properties[path[i]];
+            parentObj = parentObj.parameter[path[i]];
           }
 
-          if (!parentObj.required.includes(key)) {
-            parentObj.required.push(key);
+          if (!parentObj.required_params.includes(key)) {
+            parentObj.required_params.push(key);
           }
 
-          parentObj.properties[key] = {
+          parentObj.parameter[key] = {
             description: "",
             type: "string",
             enum: [],
-            required: [],
-            properties: {}
+            required_params: [],
+            parameter: {}
           };
         } else {
           fields[key] = {
             description: "",
             type: "string",
             enum: [],
-            required: [],
-            properties: {}
+            required_params: [],
+            parameter: {}
           };
         }
       }
     }
 
-    return { paths, fields, required };
+    return { paths, fields, required_params };
   }
 
   /**
    * Transforms fields structure by normalizing each field's properties
-   * and keeping the 'required' array for each field.
+   * and replacing 'required' with 'required_params'.
    * @param {Object} fields - The fields object to transform
    * @returns {Object} Transformed fields object with normalized structure, or {} if input is invalid
    */
@@ -153,7 +153,7 @@ class Helper {
     const transformed = {};
     for (const [key, val] of Object.entries(props)) {
       if (val === null) {
-        transformed[key] = { description: "", type: "string", enum: [], required: [], properties: {} };
+        transformed[key] = { description: "", type: "string", enum: [], required_params: [], parameter: {} };
         continue;
       }
       transformed[key] = {
@@ -161,8 +161,8 @@ class Helper {
         type: val.type || "string",
         enum: val.enum || [],
         // Filters required array to only include keys that exist in transformed fields
-        required: Array.isArray(val.required) ? val.required : [],
-        properties:
+        required_params: Array.isArray(val.required) ? val.required : [],
+        parameter:
           val.properties && typeof val.properties === "object" && Object.keys(val.properties).length > 0
             ? Helper.transformFieldsStructure(val.properties)
             : {}

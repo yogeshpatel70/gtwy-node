@@ -65,14 +65,14 @@ function transformAgentVariableToToolCallFormat(inputData) {
           type: "object",
           description: "",
           enum: [],
-          required: [],
-          properties: {}
+          required_params: [],
+          parameter: {}
         };
-      } else if (!current[part].properties) {
-        current[part].properties = {};
+      } else if (!current[part].parameter) {
+        current[part].parameter = {};
       }
 
-      current = current[part].properties;
+      current = current[part].parameter;
     }
 
     const finalKey = parts[parts.length - 1];
@@ -89,21 +89,21 @@ function transformAgentVariableToToolCallFormat(inputData) {
       type: paramType,
       description: "",
       enum: [],
-      required: []
+      required_params: []
     };
 
     if (isRequired) {
       for (let i = 0; i < parts.length - 1; i++) {
         let currentLevel = obj;
         for (let j = 0; j < i; j++) {
-          currentLevel = currentLevel[parts[j]].properties;
+          currentLevel = currentLevel[parts[j]].parameter;
         }
 
         const parentKey = parts[i];
         const childKey = parts[i + 1];
 
-        if (!currentLevel[parentKey].required.includes(childKey)) {
-          currentLevel[parentKey].required.push(childKey);
+        if (!currentLevel[parentKey].required_params.includes(childKey)) {
+          currentLevel[parentKey].required_params.push(childKey);
         }
       }
 
@@ -130,7 +130,7 @@ function transformAgentVariableToToolCallFormat(inputData) {
         type: paramType,
         description: "",
         enum: [],
-        required: []
+        required_params: []
       };
 
       if (isRequired && !requiredParams.includes(key)) {
@@ -141,7 +141,7 @@ function transformAgentVariableToToolCallFormat(inputData) {
 
   return {
     fields: fields,
-    required: requiredParams
+    required_params: requiredParams
   };
 }
 
