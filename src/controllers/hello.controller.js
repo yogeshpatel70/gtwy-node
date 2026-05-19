@@ -28,7 +28,7 @@ export const subscribe = async (req, res, next) => {
   const mode = [
     validationConfig.files && "files",
     validationConfig.vision && "vision",
-    modelConfig?.stream === true && "stream",
+    modelConfig?.stream?.value === true && "stream",
     modelConfig?.response_type?.is_template && "widget",
     modelConfig?.type === "image" && "image_model"
   ].filter(Boolean);
