@@ -1,16 +1,8 @@
 import apikeyService from "../db_services/apikey.service.js";
 import Helper from "../services/utils/helper.utils.js";
 import { findInCache, deleteInCache } from "../cache_service/index.js";
-import {
-  callOpenAIModelsApi,
-  callGroqApi,
-  callAnthropicApi,
-  callOpenRouterApi,
-  callMistralApi,
-  callGeminiApi,
-  callGrokApi,
-  callDeepgramApi
-} from "../services/utils/aiServices.js";
+import { validateApiKey } from "../services/utils/aiServices.js";
+import { getBaseUrl, getDefaultModel, getValidationConfig } from "../services/utils/loadServicesRegistry.js";
 import { redis_keys, cost_types, new_agent_service } from "../configs/constant.js";
 import { cleanupCache } from "../services/utils/redis.utils.js";
 
@@ -218,39 +210,13 @@ const deleteApikey = async (req, res, next) => {
 };
 
 const checkApikey = async (apikey, service) => {
-  let check;
-  const model = new_agent_service[service].model;
+  // Prefer the existing default model (parity) and fall back to the registry
+  // so a brand-new registered service still resolves a model with no code change.
+  const model = new_agent_service[service]?.model || getDefaultModel(service);
+  const baseUrl = getBaseUrl(service);
+  const validationConfig = getValidationConfig(service);
 
-  switch (service) {
-    case "openai":
-      check = await callOpenAIModelsApi(apikey);
-      break;
-    case "anthropic":
-      check = await callAnthropicApi(apikey, model);
-      break;
-    case "groq":
-      check = await callGroqApi(apikey, model);
-      break;
-    case "open_router":
-      check = await callOpenRouterApi(apikey);
-      break;
-    case "mistral":
-      check = await callMistralApi(apikey, model);
-      break;
-    case "gemini":
-      check = await callGeminiApi(apikey, model);
-      break;
-    case "grok":
-      check = await callGrokApi(apikey);
-      break;
-    case "deepgram":
-      check = await callDeepgramApi(apikey);
-      break;
-    default:
-      const error = new Error("Invalid service provided");
-      error.statusCode = 400;
-      throw error;
-  }
+  const check = await validateApiKey(apikey, baseUrl, model, validationConfig);
 
   if (!check.success) {
     const error = new Error("invalid apikey or apikey is expired");
@@ -259,10 +225,33 @@ const checkApikey = async (apikey, service) => {
   }
   return check.data;
 };
+const getApikeyByAgentId = async (req, res, next) => {
+  const { agent_id } = req.params;
+  const org_id = req.profile?.org?.id;
+
+  const result = await apikeyService.findApikeyByAgentId(agent_id, org_id);
+
+  if (!result.version_ids || Object.keys(result.version_ids).length === 0) {
+    res.locals = {
+      success: false,
+      message: "Apikey not found for this agent"
+    };
+    req.statusCode = 404;
+    return next();
+  }
+
+  res.locals = {
+    success: true,
+    data: result
+  };
+  req.statusCode = 200;
+  return next();
+};
 
 export default {
   saveApikey,
   getAllApikeys,
   deleteApikey,
-  updateApikey
+  updateApikey,
+  getApikeyByAgentId
 };

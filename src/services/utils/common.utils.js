@@ -3,7 +3,7 @@ const validateJsonSchemaConfiguration = (configuration) => {
     return { isValid: true, errorMessage: null };
   }
 
-  const response_type = configuration.response_type;
+  const response_type = configuration.response_type.value || configuration.response_type;
 
   if (!response_type) {
     return { isValid: true, errorMessage: null };
@@ -23,14 +23,23 @@ const validateJsonSchemaConfiguration = (configuration) => {
 
   if ("json_schema" in response_type && response_type.json_schema !== null) {
     try {
+      let jsonSchema;
       if (typeof response_type.json_schema === "object") {
-        return { isValid: true, errorMessage: null };
+        jsonSchema = response_type.json_schema;
       } else if (typeof response_type.json_schema === "string") {
-        JSON.parse(response_type.json_schema);
-        return { isValid: true, errorMessage: null };
+        jsonSchema = JSON.parse(response_type.json_schema);
       } else {
         return { isValid: false, errorMessage: "json_schema should be a valid JSON object or string" };
       }
+
+      // Only ensure the json_schema is a parsable, non-empty JSON object.
+      if (typeof jsonSchema !== "object" || jsonSchema === null || Array.isArray(jsonSchema)) {
+        return { isValid: false, errorMessage: "json_schema should be a valid JSON object" };
+      }
+      if (Object.keys(jsonSchema).length === 0) {
+        return { isValid: false, errorMessage: "json_schema should not be empty" };
+      }
+      return { isValid: true, errorMessage: null };
     } catch {
       return { isValid: false, errorMessage: "json_schema should be a valid JSON" };
     }

@@ -6,6 +6,7 @@ import { createOrgToken } from "./chatBot.controller.js";
 import embedController from "./embed.controller.js";
 import { getUsers } from "../services/proxy.service.js";
 import modelConfigDbService from "../db_services/modelConfig.service.js";
+import latencyService from "../services/latency.service.js";
 
 const clearRedisCache = async (req, res, next) => {
   const { id, ids } = req.body;
@@ -22,16 +23,16 @@ const clearRedisCache = async (req, res, next) => {
     req.statusCode = 200;
     return next();
   } else {
-    // Clear all keys except protected patterns
-    const protectedPatterns = ["bridgeusedcost_", "folderusedcost_", "apikeyusedcost_", "blacklist:"];
+    // Clear only cd_ (can-delete) keys; skip nd_ (no-delete) keys and blacklist entries
+    const REDIS_PREFIX = `AIMIDDLEWARE_${process.env.ENVIRONMENT}_`;
+    const isProtected = (key) => {
+      const bare = key.startsWith(REDIS_PREFIX) ? key.slice(REDIS_PREFIX.length) : key;
+      return bare.startsWith("nd_") || key.includes("blacklist:");
+    };
 
     const keys = await scanCacheKeys("*");
-    const keysToDelete = keys.filter((key) => {
-      return !protectedPatterns.some((pattern) => key.includes(pattern));
-    });
-    const skippedKeys = keys.filter((key) => {
-      return protectedPatterns.some((pattern) => key.includes(pattern));
-    });
+    const keysToDelete = keys.filter((key) => !isProtected(key));
+    const skippedKeys = keys.filter((key) => isProtected(key));
 
     if (keysToDelete && keysToDelete.length > 0) {
       await deleteInCache(keysToDelete);
@@ -212,6 +213,91 @@ const setModelStatus = async (req, res, next) => {
   return next();
 };
 
+const getModelsByStatus = async (req, res, next) => {
+  try {
+    const status = Number(req.params.status);
+
+    if (![0, 1].includes(status)) {
+      res.locals = {
+        success: false,
+        message: "Invalid status. Status must be 0 or 1."
+      };
+
+      req.statusCode = 400;
+      return next();
+    }
+
+    const models = await modelConfigDbService.getModelsbyStatus(status);
+
+    const groupedModels = models.reduce((acc, model) => {
+      if (!acc[model.service]) {
+        acc[model.service] = [];
+      }
+      acc[model.service].push(model.model_name);
+      return acc;
+    }, {});
+
+    res.locals = {
+      success: true,
+      message: status === 1 ? "Active models fetched successfully" : "Disabled models fetched successfully",
+      data: groupedModels
+    };
+
+    req.statusCode = 200;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const checkLatency = async (req, res, next) => {
+  const { type, count, webhook } = req.body;
+  const BULK_COUNT = 50;
+
+  switch (type) {
+    case "single": {
+      const result = await latencyService.singleLatency();
+      res.locals = {
+        success: true,
+        type: "single",
+        data: result
+      };
+      req.statusCode = 200;
+      return next();
+    }
+
+    case "bulk": {
+      latencyService.runLatencyChecks(BULK_COUNT, webhook).catch((err) => {
+        console.error("Error in background latency checks (bulk):", err);
+      });
+      res.locals = {
+        success: true,
+        message: "Latency check initiated. Results will be sent to the webhook."
+      };
+      req.statusCode = 200;
+      return next();
+    }
+
+    case "load": {
+      latencyService.runLatencyChecks(count, webhook).catch((err) => {
+        console.error("Error in background latency checks (load):", err);
+      });
+      res.locals = {
+        success: true,
+        message: "Latency check initiated. Results will be sent to the webhook."
+      };
+      req.statusCode = 200;
+      return next();
+    }
+
+    default: {
+      res.locals = { success: false, message: "Invalid type. Must be one of: single, bulk, load" };
+      req.statusCode = 400;
+      return next();
+    }
+  }
+};
+
 export default {
   clearRedisCache,
   getRedisCache,
@@ -219,5 +305,7 @@ export default {
   generateToken,
   getCurrentOrgUsers,
   getAffiliateEmbedToken,
-  setModelStatus
+  setModelStatus,
+  getModelsByStatus,
+  checkLatency
 };

@@ -71,6 +71,10 @@ export default (sequelize, DataTypes) => {
       thread_id: {
         type: DataTypes.STRING
       },
+      display_name: {
+        type: DataTypes.TEXT,
+        allowNull: true
+      },
       version_id: {
         type: DataTypes.STRING
       },
@@ -138,6 +142,14 @@ export default (sequelize, DataTypes) => {
         allowNull: true
       },
       plans: {
+        type: DataTypes.JSONB,
+        allowNull: true
+      },
+      testcase_id: {
+        type: DataTypes.STRING,
+        allowNull: true
+      },
+      testcase_data: {
         type: DataTypes.JSONB,
         allowNull: true
       }

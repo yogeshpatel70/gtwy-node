@@ -3,7 +3,8 @@ import { flatten } from "flat";
 import ConfigurationServices from "./configuration.service.js";
 import configurationModel from "../mongoModel/Configuration.model.js";
 import versionModel from "../mongoModel/BridgeVersion.model.js";
-import { new_agent_service } from "../configs/constant.js";
+import { normalizeBulkModelConfigChange, normalizeBulkModelConfigFilter } from "../utils/modelConfigUpdate.utils.js";
+import { getDefaultModel } from "../services/utils/loadServicesRegistry.js";
 
 async function checkModel(model_name, service) {
   //function to check if a model configuration exists
@@ -55,7 +56,9 @@ async function setModelStatusAdmin(model_name, service, status, org_id) {
   if (status === 0 && result) {
     usageInfo = await ConfigurationServices.findIdsByModelAndService(model_name, service, null);
 
-    const defaultModel = new_agent_service[service]?.model;
+    // Get default model from servicesRegistry instead of new_agent_service
+    const defaultModel = getDefaultModel(service);
+
     if (defaultModel && usageInfo?.data) {
       const versionIds = usageInfo.data.versions.map((v) => v.id);
       if (versionIds.length > 0) {
@@ -170,6 +173,60 @@ async function updateModelConfigs(model_name, service, updates) {
   return result.modifiedCount > 0;
 }
 
+async function bulkUpdateModelConfigs({ models, filter, change }) {
+  const uniqueModels = models ? [...new Map(models.map((model) => [model.model_name, model])).values()] : [];
+
+  if (!filter && uniqueModels.length === 0) {
+    return { error: "documentNotFound" };
+  }
+
+  const normalizedChange = normalizeBulkModelConfigChange(change);
+  if (normalizedChange.error) {
+    return normalizedChange;
+  }
+
+  const normalizedFilter = normalizeBulkModelConfigFilter(filter);
+  if (normalizedFilter.error) {
+    return normalizedFilter;
+  }
+
+  const query = { ...normalizedFilter.filterQuery };
+
+  if (!query.model_name && uniqueModels.length > 0) {
+    query.model_name = { $in: uniqueModels.map((model) => model.model_name) };
+  }
+
+  const existingModels = await ModelsConfigModel.find(query, { _id: 0, service: 1, model_name: 1 }).lean();
+
+  if (existingModels.length === 0) {
+    return { error: "documentNotFound" };
+  }
+
+  const result = await ModelsConfigModel.updateMany(query, normalizedChange.updateDocument, { strict: false });
+  const foundModelNames = new Set(existingModels.map((model) => model.model_name));
+  const notFoundModels = uniqueModels.filter((model) => !foundModelNames.has(model.model_name));
+
+  return {
+    requestedCount: uniqueModels.length,
+    matchedCount: result.matchedCount,
+    modifiedCount: result.modifiedCount,
+    updatedModels: existingModels,
+    notFoundModels
+  };
+}
+
+async function getModelsbyStatus(status) {
+  const models = await ModelsConfigModel.find(
+    { status },
+    {
+      service: 1,
+      model_name: 1,
+      _id: 0
+    }
+  ).lean();
+  return models;
+}
+
 export default {
   getAllModelConfigs,
   saveModelConfig,
@@ -180,5 +237,7 @@ export default {
   checkModelConfigExists,
   getModelConfigsByNameAndService,
   checkModel,
-  updateModelConfigs
+  updateModelConfigs,
+  bulkUpdateModelConfigs,
+  getModelsbyStatus
 };

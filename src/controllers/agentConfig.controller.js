@@ -4,30 +4,42 @@ import agentVersionDbService from "../db_services/agentVersion.service.js";
 import { callAiMiddleware } from "../services/utils/aiCall.utils.js";
 import { bridge_ids, new_agent_service } from "../configs/constant.js";
 import Helper from "../services/utils/helper.utils.js";
-import { ObjectId } from "mongodb";
 import conversationDbService from "../db_services/conversation.service.js";
-const { storeSystemPrompt, addBulkUserEntries } = conversationDbService;
-import { getDefaultValuesController } from "../services/utils/getDefaultValue.js";
-import { purgeRelatedBridgeCaches } from "../services/utils/redis.utils.js";
-import { validateJsonSchemaConfiguration } from "../services/utils/common.utils.js";
+const { addBulkUserEntries } = conversationDbService;
+import { purgeAgentCache } from "../services/utils/redis.utils.js";
 import { ensureChatbotPreview } from "../services/utility.service.js";
 import { modelConfigDocument } from "../services/utils/loadModelConfigs.js";
 import { sendAgentCreatedWebhook } from "../services/utils/agentWebhook.utils.js";
-import { convertPromptToString } from "../utils/promptWrapper.utils.js";
+import { ResponseSender } from "../services/utils/customResponse.utils.js";
 
-const createAgentController = async (req, res, next) => {
+const responseSender = new ResponseSender();
+
+const createAgentInBackground = async (req) => {
+  // flag=true → return agent in HTTP response; flag=false → notify via RTLayer
+  const flag = req.body?.flag === true;
+  let user_id = req.profile.user.id;
+  const org_id = req.profile.org.id;
+  const rtChannel = `org_${org_id}_${user_id}`;
+  let rtResponseBase = {
+    rtlLayer: true,
+    reqBody: {
+      rtlOptions: { channel: rtChannel, ttl: 1, apikey: process.env.RTLAYER_AUTH }
+    },
+    headers: {}
+  };
+
   try {
     const agents = req.body;
     const purpose = agents.purpose;
     const agentType = agents.bridgeType || "api";
-    const org_id = req.profile.org.id;
-    const folder_id = req.folder_id || null;
+    const folder_id = req.folder_id || req.body.folder_id || null;
     const folder_data = await folderDbService.getFolderData(folder_id);
-    const user_id = req.profile.user.id;
-    const all_agent = await ConfigurationServices.getAgentsByUserId(org_id); // Assuming this returns all agents for org
-
-    let prompt =
-      "Role: AI Bot\nObjective: Respond logically and clearly, maintaining a neutral, automated tone.\nGuidelines:\nIdentify the task or question first.\nProvide brief reasoning before the answer or action.\nKeep responses concise and contextually relevant.\nAvoid emotion, filler, or self-reference.\nUse examples or placeholders only when helpful.";
+    let prompt = {
+      role: "AI Bot",
+      goal: "Respond logically and clearly, maintaining a neutral, automated tone.",
+      instruction:
+        "Guidelines:\nIdentify the task or question first.\nProvide brief reasoning before the answer or action.\nKeep responses concise and contextually relevant.\nAvoid emotion, filler, or self-reference.\nUse examples or placeholders only when helpful."
+    };
     let name = agents?.name || null;
     let slugName = agents?.slugName || null;
     const meta = req.body.meta || null;
@@ -76,17 +88,12 @@ const createAgentController = async (req, res, next) => {
       const template_id = agents.templateId;
       const template_data = await ConfigurationServices.gettemplateById(template_id);
       if (!template_data) {
-        res.locals = { success: false, message: "Template not found" };
-        req.statusCode = 404;
-        return next();
+        throw new Error("Template not found");
       }
-      // Only override if we don't have folder prompt config
       if (!folder_data?.config?.prompt) {
         prompt = template_data.prompt || prompt;
       }
     }
-
-    const all_agent_name = all_agent.map((agent) => agent.name);
 
     let agent_data = {};
 
@@ -108,7 +115,6 @@ const createAgentController = async (req, res, next) => {
       const variables = {
         purpose: purpose,
         environment: environment,
-        all_bridge_names: all_agent_name,
         token: req.headers.authorization,
         viasocket_embed_token: viasocket_embed_token,
         fields:
@@ -121,6 +127,16 @@ const createAgentController = async (req, res, next) => {
                 }, {}) || { role: "", goal: "", instruction: "" }
             : { role: "", goal: "", instruction: "" }
       };
+
+      // For embed users with addDefaultApiKeys enabled, pass available services so AI can pick a supported model
+      if (
+        folder_data?.type === "embed" &&
+        folder_data?.config?.addDefaultApiKeys === true &&
+        folder_data?.apikey_object_id &&
+        typeof folder_data.apikey_object_id === "object"
+      ) {
+        variables.services = Object.keys(folder_data.apikey_object_id);
+      }
       const user = "Generate Agent Configuration according to the given user purpose.";
       const res_data = await callAiMiddleware(user, bridge_ids["create_bridge_using_ai"], variables);
       // Use AI data as-is
@@ -130,23 +146,24 @@ const createAgentController = async (req, res, next) => {
     }
 
     const { name: uniqueName, slugName: uniqueSlugName } = await ConfigurationServices.getUniqueAgentNameAndSlug(org_id, name);
-    slugName = uniqueSlugName || slugName;
-    name = uniqueName || name;
+    slugName = slugName || uniqueSlugName;
+    name = name || uniqueName;
 
     // Use AI configuration if purpose exists and valid, otherwise build manually
     let model_data;
-    let finalSettings;
+    let finalSettings = {
+      maximum_iterations: 3,
+      publicUsers: [],
+      editAccess: [],
+      response_format: { type: "default" },
+      stateless_conversation: agentType === "api",
+      ...(agents?.settings || {})
+    };
+    if (agent_data.guardrails) finalSettings.guardrails = agent_data.guardrails;
+    if (agent_data.fall_back) finalSettings.fall_back = agent_data.fall_back;
     if (purpose && agent_data?.configuration) {
       // Use AI configuration as-is
       // Define the fixed AI-created agent settings
-      finalSettings = {
-        maximum_iterations: 3,
-        publicUsers: [],
-        editAccess: [],
-        response_format: { type: "default" },
-        guardrails: agent_data.guardrails,
-        fall_back: agent_data.fall_back
-      };
       model_data = {
         type: type,
         is_rich_text: false,
@@ -205,7 +222,7 @@ const createAgentController = async (req, res, next) => {
       gpt_memory: aiVal(agent_data?.gpt_memory, true),
       folder_id: folder_id,
       user_id: user_id,
-      settings: useAiData ? finalSettings : aiVal(agent_data?.settings),
+      settings: finalSettings,
       bridge_limit: agent_limit,
       bridge_usage: agent_usage,
       bridge_limit_reset_period: agent_limit_reset_period,
@@ -239,12 +256,7 @@ const createAgentController = async (req, res, next) => {
       }
     ]);
 
-    res.locals = {
-      success: true,
-      message: "Agent created successfully",
-      agent: updated_agent_result.result
-    };
-    req.statusCode = 200;
+    const agent = updated_agent_result.result.toObject();
 
     if (!folder_id) {
       sendAgentCreatedWebhook(updated_agent_result.result, org_id).catch((err) => {
@@ -252,286 +264,155 @@ const createAgentController = async (req, res, next) => {
       });
     }
 
-    return next();
+    if (!flag) {
+      await responseSender.sendResponse({
+        ...rtResponseBase,
+        data: { type: "agent_created", user_id, agent }
+      });
+      return;
+    }
+
+    return { agent, user_id };
   } catch (e) {
-    res.locals = { success: false, message: "Error in creating agent: " + e.message };
-    req.statusCode = 400;
-    return next();
+    if (!flag) {
+      await responseSender
+        .sendResponse({
+          ...rtResponseBase,
+          data: {
+            type: "agent_create_failed",
+            user_id,
+            message: e.message || "Error in creating agent"
+          }
+        })
+        .catch((rtErr) => console.error("RT agent create error notify failed:", rtErr.message));
+      return;
+    }
+    throw e;
   }
 };
 
-const updateAgentController = async (req, res, next) => {
-  // Validation handled by middleware
-  const { agent_id, version_id } = req.params;
-  const body = req.body;
-  const org_id = String(req.profile.org.id);
-  const user_id = String(req.profile.user.id);
-  const agentData = await ConfigurationServices.getAgentsWithTools(agent_id, org_id, version_id);
-  if (!agentData.bridges) {
-    res.locals = { success: false, message: "Agent not found" };
-    req.statusCode = 404;
+const createAgentController = async (req, res, next) => {
+  const flag = req.body?.flag === true;
+
+  if (flag) {
+    const result = await createAgentInBackground(req);
+    res.locals = { success: true, agent: result.agent };
+    req.statusCode = 200;
     return next();
   }
-  const agent = agentData.bridges;
-  const parent_id = agent.parent_id;
 
-  // Authorization check is now handled by requireAdminRole middleware
-  const current_configuration = agent.configuration || {};
-  let current_variables_path = agent.variables_path || {};
-  let function_ids = agent.function_ids || [];
+  res.locals = { success: true, accepted: true, message: "Agent creation started" };
+  req.statusCode = 202;
+  createAgentInBackground(req);
+  return next();
+};
 
-  const update_fields = {};
-  const user_history = [];
+const updateAgentController = async (req, res, next) => {
+  try {
+    const { agent_id } = req.params;
+    const body = req.body;
+    const org_id = String(req.profile.org.id);
+    const user_id = String(req.profile.user.id);
 
-  let new_configuration = body.configuration;
-  const service = body.service;
-  const page_config = body.page_config;
-  const web_search_filter = body.web_search_filters;
-  const gtwy_web_search_filter = body.gtwy_web_search_filters;
-
-  if (new_configuration) {
-    const { isValid, errorMessage } = validateJsonSchemaConfiguration(new_configuration);
-    if (!isValid) {
-      res.locals = { success: false, message: errorMessage };
-      req.statusCode = 400;
+    const agentData = await ConfigurationServices.getAgentsWithTools(agent_id, org_id);
+    if (!agentData.bridges) {
+      res.locals = { success: false, message: "Agent not found" };
+      req.statusCode = 404;
       return next();
     }
-  }
 
-  if (body.connected_agent_details) {
-    update_fields.connected_agent_details = body.connected_agent_details;
-  }
+    const agent = agentData.bridges;
+    const update_fields = {};
+    const user_history = [];
 
-  if (body.apikey_object_id) {
-    const apikey_object_id = body.apikey_object_id;
-    await ConfigurationServices.getApikeyCreds(org_id, apikey_object_id);
-    update_fields.apikey_object_id = apikey_object_id;
+    const simpleAgentFields = [
+      "name",
+      "slugName",
+      "meta",
+      "bridge_summary",
+      "bridge_status",
+      "bridge_usage",
+      "bridge_limit",
+      "bridgeType",
+      "folder_id"
+    ];
 
-    if (version_id) {
-      await ConfigurationServices.updateApikeyCreds(version_id, apikey_object_id);
-    }
-  }
-
-  if (new_configuration && new_configuration.prompt) {
-    const promptString = convertPromptToString(new_configuration.prompt);
-    const prompt_result = await storeSystemPrompt(promptString, org_id, parent_id || version_id);
-    if (prompt_result && prompt_result.id) {
-      new_configuration.system_prompt_version_id = prompt_result.id;
-    }
-  }
-
-  if (new_configuration && new_configuration.type && new_configuration.type !== "fine-tune") {
-    new_configuration.fine_tune_model = { current_model: null };
-  }
-
-  const simple_fields = [
-    "bridge_status",
-    "bridge_summary",
-    "expected_qna",
-    "slugName",
-    "user_reference",
-    "gpt_memory",
-    "gpt_memory_context",
-    "doc_ids",
-    "variables_state",
-    "IsstarterQuestionEnable",
-    "name",
-    "bridgeType",
-    "meta",
-    "web_search_filters",
-    "gtwy_web_search_filters",
-    "chatbot_auto_answers",
-    "auto_model_select",
-    "cache_on",
-    "pre_tools"
-  ];
-
-  for (const field of simple_fields) {
-    if (body[field] !== undefined) {
-      update_fields[field] = body[field];
-    }
-  }
-
-  if (body.settings !== undefined) {
-    const current_settings = agent.settings || {};
-    const merged_settings = { ...current_settings, ...body.settings };
-    update_fields.settings = merged_settings;
-    if (body.settings.editAccess !== undefined && agent_id && !version_id) {
-      try {
-        if (Array.isArray(body.settings.editAccess)) {
-          update_fields.editAccess = body.settings.editAccess;
-        }
-      } catch (e) {
-        console.error(`Error updating users array for agent ${agent_id}:`, e);
+    for (const field of simpleAgentFields) {
+      if (body[field] !== undefined) {
+        update_fields[field] = body[field];
       }
     }
-  }
 
-  if (body.bridge_limit !== undefined) update_fields.bridge_limit = body.bridge_limit;
-  if (body.bridge_usage !== undefined) update_fields.bridge_usage = body.bridge_usage;
-  if (body.bridge_limit_reset_period !== undefined) {
-    update_fields.bridge_limit_reset_period = body.bridge_limit_reset_period;
-    update_fields.bridge_limit_start_date = new Date();
-  }
-
-  if (page_config) update_fields.page_config = page_config;
-  if (web_search_filter !== undefined) update_fields.web_search_filters = web_search_filter;
-  if (gtwy_web_search_filter !== undefined) update_fields.gtwy_web_search_filters = gtwy_web_search_filter;
-
-  if (service) {
-    update_fields.service = service;
-    if (new_configuration && new_configuration.model) {
-      const configuration = await getDefaultValuesController(service, new_configuration.model, current_configuration, new_configuration.type);
-      new_configuration = { ...configuration, type: new_configuration.type || "chat" };
+    if (body.agent_info) {
+      update_fields.agent_info = { ...agent.agent_info, ...body.agent_info };
     }
-  }
 
-  if (new_configuration) {
-    if (new_configuration.model && !service) {
-      const current_service = agent.service;
-      const configuration = await getDefaultValuesController(current_service, new_configuration.model, current_configuration, new_configuration.type);
-      new_configuration = { ...new_configuration, ...configuration, type: new_configuration.type || "chat" };
+    if (body.bridge_limit_reset_period !== undefined) {
+      update_fields.bridge_limit_reset_period = body.bridge_limit_reset_period;
+      update_fields.bridge_limit_start_date = new Date();
     }
-    update_fields.configuration = { ...current_configuration, ...new_configuration };
-  }
 
-  if (body.variables_path) {
-    const variables_path = body.variables_path;
-    const updated_variables_path = { ...current_variables_path, ...variables_path };
-    for (const key in updated_variables_path) {
-      if (Array.isArray(updated_variables_path[key])) {
-        updated_variables_path[key] = {};
-      }
+    if (body.settings !== undefined) {
+      update_fields.settings = { ...agent.settings, ...body.settings };
     }
-    update_fields.variables_path = updated_variables_path;
-    current_variables_path = updated_variables_path; // Update local reference
-  }
 
-  // Handle built-in tools
-  if (body.built_in_tools_data) {
-    const { built_in_tools, built_in_tools_operation } = body.built_in_tools_data;
-    if (built_in_tools) {
-      const op = built_in_tools_operation === "1" ? 1 : 0;
-      await ConfigurationServices.updateBuiltInTools(version_id || agent_id, built_in_tools, op);
-    }
-  }
+    update_fields.updatedAt = new Date();
+    await ConfigurationServices.updateAgent(agent_id, update_fields);
 
-  // Handle agents
-  if (body.agents) {
-    const { connected_agents, agent_status } = body.agents;
-    if (connected_agents) {
-      const op = agent_status === "1" ? 1 : 0;
-      if (op === 0) {
-        for (const agent_info of Object.values(connected_agents)) {
-          const key = agent_info.bridge_id?.toString() ?? agent_info.bridge_id;
-          if (key && current_variables_path[key]) {
-            delete current_variables_path[key];
-            update_fields.variables_path = current_variables_path;
-          }
-        }
-      }
-      await ConfigurationServices.updateAgents(version_id || agent_id, connected_agents, op);
-    }
-  }
-
-  // Handle function data
-  if (body.functionData) {
-    const { function_id, function_operation, script_id } = body.functionData;
-    if (function_id) {
-      const op = function_operation === "1" ? 1 : 0;
-      const target_id = version_id || agent_id;
-
-      if (op === 1) {
-        if (!function_ids.includes(function_id)) {
-          function_ids.push(function_id);
-          update_fields.function_ids = function_ids.map((fid) => new ObjectId(fid));
-          await ConfigurationServices.updateAgentIdsInApiCalls(function_id, target_id, 1);
-        }
-      } else {
-        if (script_id && current_variables_path[script_id]) {
-          delete current_variables_path[script_id];
-          update_fields.variables_path = current_variables_path;
-        }
-        if (function_ids.includes(function_id)) {
-          function_ids = function_ids.filter((fid) => fid.toString() !== function_id);
-          update_fields.function_ids = function_ids.map((fid) => new ObjectId(fid));
-          await ConfigurationServices.updateAgentIdsInApiCalls(function_id, target_id, 0);
-        }
-      }
-    }
-  }
-
-  // Build user history entries
-  const agent_versions = !version_id && agent.versions ? agent.versions : [];
-  for (const key in body) {
-    const value = body[key];
-    const history_entry = {
-      user_id: user_id,
-      org_id: org_id,
-      bridge_id: parent_id || "",
-      version_id: version_id,
-      time: new Date() // Python uses default time?
+    const historyBase = {
+      user_id,
+      org_id,
+      bridge_id: agent_id,
+      version_id: null,
+      time: new Date()
     };
 
-    if (key === "configuration") {
-      for (const config_key in value) {
-        user_history.push({ ...history_entry, type: config_key });
+    const agentVersions = Array.isArray(agent.versions) ? agent.versions : [];
+    for (const key of Object.keys(body)) {
+      for (const version of agentVersions) {
+        user_history.push({
+          ...historyBase,
+          version_id: String(version),
+          type: key === "settings" ? "editAccess" : key
+        });
       }
-    } else if (!version_id && agent_versions.length > 0) {
-      // Agent-level update (e.g. name): push history for each version
-      for (const vid of agent_versions) {
-        user_history.push({ ...history_entry, version_id: String(vid), type: key });
-      }
-    } else {
-      user_history.push({ ...history_entry, type: key });
     }
-  }
 
-  if (version_id) {
-    if (body.version_description === undefined) {
-      update_fields.is_drafted = true;
-    } else {
-      update_fields.version_description = body.version_description;
+    if (user_history.length > 0) {
+      await addBulkUserEntries(user_history);
     }
-  }
 
-  // Update the updatedAt timestamp
-  update_fields.updatedAt = new Date();
+    const updatedAgent = await ConfigurationServices.getAgentsWithTools(agent_id, org_id);
 
-  await ConfigurationServices.updateAgent(agent_id, update_fields, version_id);
+    try {
+      await purgeAgentCache({
+        bridge_id: agent_id,
+        bridge_usage: body.bridge_usage !== undefined ? body.bridge_usage : -1,
+        org_id,
+        agent_config: updatedAgent.bridges
+      });
+    } catch (e) {
+      console.error(`Failed clearing agent related cache on update: ${e}`);
+    }
 
-  // If updating a version, also update the parent agent's updatedAt
-  if (version_id && parent_id) {
-    await ConfigurationServices.updateAgent(parent_id, { updatedAt: new Date() }, null);
-  }
+    const response = await Helper.responseMiddlewareForBridge(
+      updatedAgent.bridges.service,
+      {
+        success: true,
+        message: "Agent Updated successfully",
+        agent: updatedAgent.bridges
+      },
+      true
+    );
 
-  const updatedAgent = await ConfigurationServices.getAgentsWithTools(agent_id, org_id, version_id);
-
-  await addBulkUserEntries(user_history);
-
-  try {
-    await purgeRelatedBridgeCaches(agent_id, body.bridge_usage !== undefined ? body.bridge_usage : -1, org_id);
+    res.locals = response;
+    req.statusCode = 200;
+    return next();
   } catch (e) {
-    console.error(`Failed clearing agent related cache on update: ${e}`);
+    res.locals = { success: false, message: e.message };
+    req.statusCode = 400;
+    return next();
   }
-
-  if (service) {
-    updatedAgent.bridges.service = service;
-  }
-
-  const response = await Helper.responseMiddlewareForBridge(
-    updatedAgent.bridges.service,
-    {
-      success: true,
-      message: "Agent Updated successfully",
-      agent: updatedAgent.bridges
-    },
-    true
-  );
-
-  res.locals = response;
-  req.statusCode = 200;
-  return next();
 };
 
 const getAgentsAndVersionsByModelController = async (req, res, next) => {
@@ -737,11 +618,10 @@ const deleteAgentController = async (req, res, next) => {
 
 const permanentlyDeleteAgentController = async (req, res, next) => {
   const { agent_id } = req.params;
-  const org_id = req.profile.org.id;
   try {
-    const result = await ConfigurationServices.permanentlyDeleteAgent(agent_id, org_id);
+    const result = await ConfigurationServices.permanentlyDeleteAgent(agent_id);
     if (result.success) {
-      console.log(`Permanent delete completed for agent ${agent_id} and ${result.deletedVersionsCount || 0} versions for org ${org_id}`);
+      console.log(`Permanent delete completed for agent ${agent_id} and ${result.deletedVersionsCount || 0} versions.`);
     }
     res.locals = result;
     req.statusCode = result?.success ? 200 : 400;

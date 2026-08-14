@@ -1,136 +1,34 @@
-async function callOpenAIModelsApi(apiKey) {
-  const url = "https://api.openai.com/v1/models";
-  const headers = {
-    Authorization: `Bearer ${apiKey}`
-  };
+// Generic API key validation function that uses validation_config from DB
+// validation_config structure: { method, path, headers, query_param }
+async function validateApiKey(apiKey, baseUrl, model, validationConfig) {
+  const { method, path, headers, query_param } = validationConfig;
 
-  try {
-    const response = await fetch(url, { method: "GET", headers });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
+  // Replace placeholders in headers
+  const processedHeaders = {};
+  for (const [key, value] of Object.entries(headers || {})) {
+    processedHeaders[key] = value.replace("{apiKey}", apiKey);
   }
-}
 
-async function callAnthropicApi(apiKey, model = "claude-3-7-sonnet-20250219") {
-  const url = "https://api.anthropic.com/v1/messages";
-  const headers = {
-    "x-api-key": apiKey,
-    "anthropic-version": "2023-06-01",
-    "content-type": "application/json"
-  };
-
-  const body = JSON.stringify({
-    model: model,
-    max_tokens: 1,
-    messages: [{ role: "user", content: "Hello, world" }]
-  });
-
-  try {
-    const response = await fetch(url, { method: "POST", headers, body });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-async function callGroqApi(apiKey, model = "llama-3.3-70b-versatile") {
-  const url = "https://api.groq.com/openai/v1/chat/completions";
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${apiKey}`
-  };
-
-  const body = JSON.stringify({
-    model: model,
-    messages: [{ role: "user", content: "hii" }]
-  });
-
-  try {
-    const response = await fetch(url, { method: "POST", headers, body });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-async function callOpenRouterApi(apiKey) {
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/models", {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      }
+  // Hardcoded body for POST requests (same for all services)
+  let processedBody = null;
+  if (method === "POST") {
+    processedBody = JSON.stringify({
+      model,
+      messages: [{ role: "user", content: "hi" }]
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
   }
-}
 
-async function callMistralApi(apiKey, model = "mistral-small-latest") {
-  try {
-    const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          {
-            role: "user",
-            content: "hi"
-          }
-        ]
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
+  // Build URL with query param if needed (for Gemini)
+  let url = `${baseUrl}/${path}`;
+  if (query_param) {
+    url += `?${query_param}=${apiKey}`;
   }
-}
 
-async function callGeminiApi(apiKey) {
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json"
-      }
+    const response = await fetch(url, {
+      method,
+      headers: processedHeaders,
+      body: processedBody
     });
 
     if (!response.ok) {
@@ -145,44 +43,4 @@ async function callGeminiApi(apiKey) {
   }
 }
 
-async function callGrokApi(apiKey) {
-  try {
-    const response = await fetch("https://api.x.ai/v1/models", {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-async function callDeepgramApi(apiKey) {
-  try {
-    const response = await fetch("https://api.deepgram.com/v1/projects", {
-      method: "GET",
-      headers: {
-        Authorization: `Token ${apiKey}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return { success: true, data };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-export { callOpenAIModelsApi, callAnthropicApi, callGroqApi, callOpenRouterApi, callMistralApi, callGeminiApi, callGrokApi, callDeepgramApi };
+export { validateApiKey };

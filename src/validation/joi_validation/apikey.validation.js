@@ -1,11 +1,14 @@
 import Joi from "joi";
+import { getServiceNames } from "../../services/utils/loadServicesRegistry.js";
 
-const saveApikey = {
+const saveApikeySchema = {
   body: Joi.object()
     .keys({
       name: Joi.string().required(),
       apikey: Joi.string().required(),
-      service: Joi.string().valid("openai", "gemini", "anthropic", "groq", "open_router", "mistral", "grok", "deepgram").required(),
+      service: Joi.string()
+        .valid(...getServiceNames())
+        .required(),
       apikey_limit: Joi.number().min(0).precision(6).optional(),
       apikey_usage: Joi.number().min(0).precision(6).optional(),
       apikey_limit_reset_period: Joi.string().valid("monthly", "weekly", "daily").optional(),
@@ -18,7 +21,7 @@ const getAllApikeys = {
   // No validation needed
 };
 
-const updateApikey = {
+const updateApikeySchema = {
   params: Joi.object()
     .keys({
       apikey_id: Joi.string()
@@ -34,7 +37,9 @@ const updateApikey = {
     .keys({
       name: Joi.string().optional(),
       apikey: Joi.string().optional(),
-      service: Joi.string().valid("openai", "gemini", "anthropic", "groq", "open_router", "mistral", "grok", "deepgram").optional(),
+      service: Joi.string()
+        .valid(...getServiceNames())
+        .optional(),
       apikey_limit: Joi.number().min(0).precision(6).optional(),
       apikey_usage: Joi.number().min(0).precision(6).optional(),
       apikey_limit_reset_period: Joi.string().valid("monthly", "weekly", "daily").optional(),
@@ -57,9 +62,20 @@ const deleteApikey = {
     .unknown(true)
 };
 
+const getApikeyByAgentId = {
+  params: Joi.object()
+    .keys({
+      agent_id: Joi.string().required().messages({
+        "any.required": "agent_id is required"
+      })
+    })
+    .unknown(true)
+};
+
 export default {
-  saveApikey,
+  saveApikeySchema,
   getAllApikeys,
-  updateApikey,
-  deleteApikey
+  updateApikeySchema,
+  deleteApikey,
+  getApikeyByAgentId
 };

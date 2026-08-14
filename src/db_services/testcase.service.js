@@ -1,4 +1,6 @@
 import testcaseModel from "../mongoModel/Testcase.model.js";
+import models from "../../models/index.js";
+import Sequelize from "sequelize";
 
 async function saveTestCase(testcaseData) {
   const newTestCase = new testcaseModel(testcaseData);
@@ -15,6 +17,24 @@ async function deleteTestCaseById(id) {
   };
 }
 
+async function deleteMultipleTestCases(ids) {
+  const result = await testcaseModel.deleteMany({ _id: { $in: ids } });
+  return {
+    success: result.deletedCount > 0,
+    deletedCount: result.deletedCount,
+    message: result.deletedCount > 0 ? `${result.deletedCount} testcase(s) deleted successfully` : "No testcases found to delete"
+  };
+}
+
+async function deleteTestCasesByBridgeId(bridge_id) {
+  const result = await testcaseModel.deleteMany({ bridge_id: bridge_id });
+  return {
+    success: result.deletedCount > 0,
+    deletedCount: result.deletedCount,
+    message: result.deletedCount > 0 ? `${result.deletedCount} testcase(s) deleted successfully` : "No testcases found to delete"
+  };
+}
+
 async function updateTestCaseById(id, updateData) {
   const result = await testcaseModel.findOneAndUpdate({ _id: id }, { $set: updateData }, { returnDocument: "after" });
   return result ? { ...result.toObject(), _id: result._id.toString() } : null;
@@ -25,27 +45,59 @@ async function getTestcaseById(id) {
   return result ? { ...result, _id: result._id.toString() } : null;
 }
 
-async function getMergedTestcasesAndHistoryByBridgeId(bridge_id) {
-  const testcases = await testcaseModel.aggregate([
-    { $match: { bridge_id: bridge_id } },
-    {
-      $lookup: {
-        from: "testcases_history",
-        let: { testcase_id: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $or: [{ $eq: ["$testcase_id", "$$testcase_id"] }, { $eq: ["$testcase_id", { $toString: "$$testcase_id" }] }]
-              }
-            }
-          }
-        ],
-        as: "history"
+async function getAllTestcasesByBridgeId(bridge_id, page = 1, limit = 30, keyword = "") {
+  const skip = (page - 1) * limit;
+
+  // Build filter query
+  const filter = { bridge_id };
+
+  // Add keyword search if provided
+  if (keyword && keyword.trim() !== "") {
+    filter.$or = [{ name: { $regex: keyword, $options: "i" } }, { "conversation.content": { $regex: keyword, $options: "i" } }];
+  }
+
+  const testcases = await testcaseModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean();
+  const testcasesWithIds = testcases.map((tc) => ({ ...tc, _id: tc._id.toString() }));
+
+  // Get total count
+  const totalCount = await testcaseModel.countDocuments(filter);
+
+  // Fetch history for each testcase from PostgreSQL
+  const testcaseIds = testcasesWithIds.map((tc) => tc._id);
+  const historyMap = {};
+
+  if (testcaseIds.length > 0) {
+    const historyLogs = await models.pg.conversation_logs.findAll({
+      where: {
+        bridge_id: bridge_id,
+        testcase_id: { [Sequelize.Op.in]: testcaseIds }
+      },
+      order: [["created_at", "DESC"]]
+    });
+
+    // Group history by testcase_id
+    historyLogs.forEach((log) => {
+      if (log.testcase_id && !historyMap[log.testcase_id]) {
+        historyMap[log.testcase_id] = [];
       }
-    }
-  ]);
-  return testcases;
+      if (log.testcase_id) {
+        historyMap[log.testcase_id].push(log);
+      }
+    });
+  }
+
+  // Append history to each testcase
+  const testcasesWithHistory = testcasesWithIds.map((tc) => ({
+    ...tc,
+    history: historyMap[tc._id] || []
+  }));
+
+  return {
+    data: testcasesWithHistory,
+    total: totalCount,
+    page: page,
+    limit: limit
+  };
 }
 
 async function parseAndSaveTestcases(testcasesData, bridge_id) {
@@ -111,8 +163,10 @@ async function parseAndSaveTestcases(testcasesData, bridge_id) {
 export default {
   saveTestCase,
   deleteTestCaseById,
+  deleteMultipleTestCases,
+  deleteTestCasesByBridgeId,
   updateTestCaseById,
   getTestcaseById,
-  getMergedTestcasesAndHistoryByBridgeId,
+  getAllTestcasesByBridgeId,
   parseAndSaveTestcases
 };

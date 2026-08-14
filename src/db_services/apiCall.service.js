@@ -1,13 +1,47 @@
 import apiCallModel from "../mongoModel/ApiCall.model.js";
 import versionModel from "../mongoModel/BridgeVersion.model.js";
+import configurationModel from "../mongoModel/Configuration.model.js";
 import mongoose from "mongoose";
 import { deleteInCache } from "../cache_service/index.js";
 import agentVersionService from "../db_services/agentVersion.service.js";
+import folderService from "./folder.service.js";
 
 async function getAllApiCallsByOrgId(org_id, folder_id, user_id, isEmbedUser) {
   let query = { org_id: org_id };
-  if (folder_id) query.folder_id = folder_id;
-  if (user_id && isEmbedUser) query.user_id = user_id.toString();
+  let folder_tools_id = [];
+  let isEmbedFolder = false;
+
+  if (folder_id) {
+    const folderData = await folderService.getFolderData(folder_id);
+    if (folderData?.type === "embed") {
+      isEmbedFolder = true;
+      folder_tools_id = folderData.config?.tools_id || folderData.tools_ids || folderData.tools_id || [];
+    }
+  }
+
+  const userCondition = user_id && isEmbedUser ? { user_id: user_id.toString() } : {};
+  if (isEmbedFolder && folder_tools_id.length > 0) {
+    const objectIds = folder_tools_id.map((id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id));
+
+    query.$or = [
+      {
+        folder_id: folder_id,
+        ...userCondition
+      },
+      {
+        _id: { $in: objectIds }
+      }
+    ];
+  } else {
+    if (folder_id) {
+      query.folder_id = folder_id;
+    } else {
+      query.folder_id = { $in: [null, ""] };
+    }
+    if (user_id && isEmbedUser) {
+      query.user_id = user_id.toString();
+    }
+  }
 
   let apiCalls = await apiCallModel.find(query).lean();
   return apiCalls || [];
@@ -51,28 +85,44 @@ async function getFunctionById(function_id) {
 }
 
 async function deleteFunctionFromApicallsDb(org_id, script_id) {
-  const bridgeData = await apiCallModel.findOne({ org_id: org_id, script_id: script_id }, { bridge_ids: 1, version_ids: 1, _id: 1 });
+  const functionData = await apiCallModel.findOne({ org_id: org_id, script_id: script_id }, { _id: 1 });
 
-  if (!bridgeData) {
+  if (!functionData) {
     throw new Error("No matching function found to delete.");
   }
 
-  const bridge_ids = bridgeData.bridge_ids || [];
-  const version_ids = bridgeData.version_ids || [];
-  const function_id = bridgeData._id;
+  const function_id_str = functionData._id.toString();
 
-  if (bridge_ids.length > 0) {
-    await versionModel.updateMany({ _id: { $in: bridge_ids } }, { $pull: { function_ids: function_id } });
-  }
-
-  if (version_ids.length > 0) {
-    await versionModel.updateMany({ _id: { $in: version_ids } }, { $pull: { function_ids: function_id } });
-  }
-
-  const result = await apiCallModel.deleteOne({
-    org_id: org_id,
-    script_id: script_id
-  });
+  const [, , result] = await Promise.all([
+    configurationModel.collection.updateMany(
+      {
+        org_id: org_id,
+        $or: [{ function_ids: function_id_str }, { "pre_tools.config.function_id": function_id_str }]
+      },
+      {
+        $pull: {
+          function_ids: function_id_str,
+          pre_tools: { "config.function_id": function_id_str }
+        }
+      }
+    ),
+    versionModel.collection.updateMany(
+      {
+        org_id: org_id,
+        $or: [{ function_ids: function_id_str }, { "pre_tools.config.function_id": function_id_str }]
+      },
+      {
+        $pull: {
+          function_ids: function_id_str,
+          pre_tools: { "config.function_id": function_id_str }
+        }
+      }
+    ),
+    apiCallModel.deleteOne({
+      org_id: org_id,
+      script_id: script_id
+    })
+  ]);
 
   if (result.deletedCount > 0) {
     return {
@@ -99,15 +149,15 @@ async function getApiData(org_id, script_id, folder_id, user_id, isEmbedUser) {
 }
 
 /**
- * @param {Array} required_params - List of top-level field keys required for this API call
+ * @param {Array} required - List of top-level field keys required for this API call
  */
-async function saveApi(desc, org_id, folder_id, user_id, api_data, bridge_ids = [], script_id, fields, title, required_params = []) {
+async function saveApi(desc, org_id, folder_id, user_id, api_data, bridge_ids = [], script_id, fields, title, required = []) {
   const updateData = {
     description: desc,
     org_id: org_id,
     script_id: script_id,
     title: title,
-    required_params: required_params
+    required: required
   };
 
   // Helper function to check if a value is empty
@@ -157,6 +207,67 @@ async function saveApi(desc, org_id, folder_id, user_id, api_data, bridge_ids = 
   }
 }
 
+async function getAgentsAndVersionsByFunctionIds(org_id) {
+  try {
+    const configurations = await configurationModel
+      .find({ org_id: org_id, function_ids: { $exists: true, $ne: [] } })
+      .select({ _id: 1, function_ids: 1, name: 1 })
+      .lean();
+
+    const versions = await versionModel
+      .find({ org_id: org_id, function_ids: { $exists: true, $ne: [] } })
+      .select({ _id: 1, function_ids: 1, parent_id: 1, name: 1 })
+      .lean();
+
+    const result = {};
+
+    for (const config of configurations) {
+      const agent_id = config._id.toString();
+      for (const functionId of config.function_ids || []) {
+        const key = functionId && functionId.toString ? functionId.toString() : String(functionId);
+
+        if (!result[key]) {
+          result[key] = {};
+        }
+
+        if (!result[key][agent_id]) {
+          result[key][agent_id] = [];
+        }
+      }
+    }
+
+    for (const version of versions) {
+      const version_id = version._id.toString();
+      const parent_id = version.parent_id ? version.parent_id.toString() : null;
+
+      for (const functionId of version.function_ids || []) {
+        const key = functionId && functionId.toString ? functionId.toString() : String(functionId);
+
+        if (!result[key]) {
+          result[key] = {};
+        }
+
+        if (parent_id) {
+          if (!result[key][parent_id]) {
+            result[key][parent_id] = [];
+          }
+          if (!result[key][parent_id].includes(version_id)) {
+            result[key][parent_id].push(version_id);
+          }
+        }
+      }
+    }
+
+    return {
+      success: true,
+      data: result
+    };
+  } catch (error) {
+    console.error("Error in getAgentsAndVersionsByFunctionIds:", error);
+    throw error;
+  }
+}
+
 export default {
   getAllApiCallsByOrgId,
   updateApiCallByFunctionId,
@@ -164,5 +275,6 @@ export default {
   deleteFunctionFromApicallsDb,
   createApiCall,
   getApiData,
-  saveApi
+  saveApi,
+  getAgentsAndVersionsByFunctionIds
 };

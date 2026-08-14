@@ -1,9 +1,11 @@
+import { configDotenv } from "dotenv";
+configDotenv();
+
 import "express-async-errors";
 import express from "express";
 import cors from "cors";
-import { configDotenv } from "dotenv";
 import "./grafana.js";
-import "./consumers/index.js";
+import { stopConsumers } from "./consumers/index.js";
 import "./services/cache.service.js";
 import configRoutes from "./routes/config.routes.js";
 import apikeyRoutes from "./routes/apikey.routes.js";
@@ -26,6 +28,7 @@ import testcaseRoutes from "./routes/testcase.routes.js";
 import reportRoute from "./routes/report.routes.js";
 import modelsRoutes from "./routes/modelConfig.routes.js";
 import embedRoutes from "./routes/embed.routes.js";
+import folderRoutes from "./routes/folder.routes.js";
 import historyRoutes from "./routes/history.routes.js";
 import apiCallRoutes from "./routes/apiCall.routes.js";
 import agentVersionRoutes from "./routes/agentVersion.routes.js";
@@ -38,10 +41,15 @@ import converstaionRoutes from "./routes/conversation.routes.js";
 import internalRoutes from "./routes/internal.routes.js";
 import promptWrapperRoutes from "./routes/promptWrapper.routes.js";
 import richUiTemplateRoutes from "./routes/richUiTemplate.routes.js";
+import lagoRoutes from "./routes/lago.routes.js";
 import batchHistoryRoutes from "./routes/batchHistory.routes.js";
+import observabilityRoutes from "./routes/observability.routes.js";
+import analyticsRoutes from "./routes/analytics.routes.js";
+import { logSlowCall } from "./services/utils/slowCallLogger.js";
 const app = express();
-configDotenv();
 const PORT = process.env.PORT || 7072;
+
+let isReady = true;
 
 app.use(
   cors({
@@ -50,18 +58,37 @@ app.use(
     preflightContinue: true
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 // app.use(multer().array());
 try {
   mongoose.set("strictQuery", false);
-  mongoose.connect(config.mongo.uri, {});
+  // monitorCommands lets us time every Mongo command and warn on slow ones.
+  mongoose.connect(config.mongo.uri, { monitorCommands: true });
+  mongoose.connection.on("connected", () => {
+    const mongoClient = mongoose.connection.getClient();
+    // Ignore high-frequency internal chatter that would drown the slow-call signal.
+    const ignoredCommands = new Set(["ismaster", "hello", "ping", "endSessions", "saslStart", "saslContinue", "getnonce", "authenticate", "logout"]);
+    mongoClient.on("commandSucceeded", (event) => {
+      if (ignoredCommands.has(event.commandName)) return;
+      // event.duration is milliseconds; collection is the value under the command name key.
+      const collection = event.command && typeof event.command[event.commandName] === "string" ? event.command[event.commandName] : "";
+      const label = collection ? `${event.commandName} ${collection}` : event.commandName;
+      logSlowCall("mongo", label, event.duration);
+    });
+  });
 } catch (err) {
   console.error("database connection error: ", err.message);
   // logger.error('database connection error: ' + err.message);
 }
 
-app.get("/healthcheck", async (req, res) => {
-  res.status(200).send("OK running good...v1.1");
+app.get("/ready", (req, res) => {
+  if (!isReady) return res.status(502).send("shutting down");
+  res.status(200).send("ok");
+});
+
+app.get("/healthcheck", (req, res) => {
+  res.status(200).send("OK running good...v1.1"); // always 200
 });
 app.use("/api/v1/config", converstaionRoutes);
 app.use("/api/agent", configRoutes);
@@ -71,6 +98,7 @@ app.use("/api/apikeys", apikeyRoutes);
 app.use("/api/service", serviceRoutes);
 app.use("/api/chatbot", chatbotRoutes);
 app.use("/api/embed", embedRoutes);
+app.use("/api/folder", folderRoutes);
 app.use("/api/user", clientAuthRoutes);
 app.use("/api/alerting", alertingRoutes);
 app.use("/api/thread", threadRoutes);
@@ -90,6 +118,9 @@ app.use("/api/template", templateRoute);
 app.use("/api/prompt_wrappers", promptWrapperRoutes);
 app.use("/api/internal", internalRoutes);
 app.use("/api/rich_ui_templates", richUiTemplateRoutes);
+app.use("/api/lago", lagoRoutes);
+app.use("/api/observability", observabilityRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 //Metrics
 // app.use('/api/v1/metrics', metrisRoutes);
@@ -99,42 +130,35 @@ app.use(notFoundMiddleware); // added at the last, so that it runs after all rou
 app.use(errorHandlerMiddleware);
 
 import { initModelConfiguration, backgroundListenForChanges } from "./services/utils/loadModelConfigs.js";
+import { initServicesRegistry, backgroundListenForServiceChanges } from "./services/utils/loadServicesRegistry.js";
 
-initializeMonthlyLatencyReport();
-initializeWeeklyLatencyReport();
-initializeDailyUpdateCron();
+const cronTasks = [initializeMonthlyLatencyReport(), initializeWeeklyLatencyReport(), initializeDailyUpdateCron()];
 
 initModelConfiguration();
 backgroundListenForChanges();
 
-const server = app.listen(PORT, () => {
+initServicesRegistry();
+backgroundListenForServiceChanges();
+
+let server = app.listen(PORT, () => {
   console.log(`Server is running on port:${PORT}`);
 });
+
+server.keepAliveTimeout = 10 * 60 * 1000 + 30000; // 10 minutes + 5 Seconds extra than load balancer timeout
 
 // Graceful shutdown handler
 const shutdown = async (signal, reason) => {
   console.log(`\nReceived ${signal} signal, starting graceful shutdown...`);
   console.log(`Reason: ${reason}`);
 
+  isReady = false;
+
   try {
-    // Close database connection
-    await mongoose.connection.close();
-    console.log("Database connection closed successfully");
+    cronTasks.forEach((task) => task?.stop());
+    console.log("Cron jobs stopped");
 
-    // Close server
-    await new Promise((resolve, reject) => {
-      server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve();
-      });
-    });
-    console.log("Server closed successfully");
-
-    // Exit process
-    process.exit(0);
+    await stopConsumers();
+    console.log("Queue consumers stopped");
   } catch (error) {
     console.error("Error during shutdown:", error);
     process.exit(1);

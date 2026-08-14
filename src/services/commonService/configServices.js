@@ -9,7 +9,6 @@ import { FineTuneSchema } from "../../validation/fineTuneValidation.js";
 import { chatbotHistoryValidationSchema } from "../../validation/joi_validation/chatBot.validation.js";
 import { send_error_to_webhook } from "../sendErrorWebhook.service.js";
 import { findThreadHistoryFormatted, updateStatus, createConversationLog } from "../../db_services/history.service.js";
-import { createThread } from "../thread.service.js";
 
 const getThreads = async (req, res, next) => {
   let page = parseInt(req.query.pageNo) || 1;
@@ -22,9 +21,7 @@ const getThreads = async (req, res, next) => {
   let bridge = {};
 
   if (bridge_slugName) {
-    bridge = req.chatBot?.ispublic
-      ? await configurationService.getAgentByUrlSlugname(bridge_slugName)
-      : await configurationService.getAgentIdBySlugname(org_id, bridge_slugName);
+    bridge = await configurationService.getAgentIdBySlugname(org_id, bridge_slugName);
     bridge_id = bridge?._id?.toString();
     starterQuestion = !bridge?.IsstarterQuestionEnable ? [] : bridge?.starterQuestion;
     org_id = req.chatBot?.ispublic ? bridge?.org_id : org_id;
@@ -195,7 +192,7 @@ const sendError = async (bridge_id, org_id, error_message, error_type) => {
 };
 
 export const createEntry = async (req, res, next) => {
-  const { thread_id, bridge_id } = req.params;
+  const { thread_id, bridge_id, sub_thread_id } = req.params;
   const { message } = req.body;
   const message_id = crypto.randomUUID();
   const org_id = req?.profile?.org?.id || req?.profile?.org_id;
@@ -209,7 +206,7 @@ export const createEntry = async (req, res, next) => {
     type: "chat",
     message_by: "assistant",
     message_id: message_id,
-    sub_thread_id: thread_id
+    sub_thread_id: sub_thread_id || thread_id
   };
   try {
     await createThreadHistrorySchema.validateAsync(payload);
@@ -219,16 +216,6 @@ export const createEntry = async (req, res, next) => {
       error: error.details
     });
   }
-  // Upsert subthread mapping in Mongo (no-op if already exists for this thread/sub_thread/org)
-
-  await createThread({
-    thread_id,
-    sub_thread_id: thread_id,
-    display_name: thread_id,
-    org_id: org_id?.toString(),
-    bridge_id
-  });
-
   // Use the new conversation_logs service instead of the old conversations table
   const threads = await createConversationLog(payload);
   res.locals = threads;
@@ -273,26 +260,14 @@ const getAllSubThreadsController = async (req, res, next) => {
   const org_id = req?.profile?.org?.id || req?.profile?.org_id;
 
   if (isError || version_id) {
-    // Run both queries in parallel since they don't depend on each other
-    const [threads, sub_thread_ids] = await Promise.all([
-      conversationDbService.getSubThreads(org_id, thread_id, bridge_id),
-      conversationDbService.getSubThreadsByError(org_id, thread_id, bridge_id, version_id, isError)
-    ]);
-
-    const threadsWithDisplayNames = sub_thread_ids.map((sub_thread_id) => {
-      const thread = threads.find((t) => t.sub_thread_id === sub_thread_id);
-      return {
-        sub_thread_id,
-        display_name: thread ? thread.display_name : sub_thread_id
-      };
-    });
+    const threads = await conversationDbService.getSubThreadsWithActivity(org_id, thread_id, bridge_id, { version_id, isError });
+    const threadsWithDisplayNames = threads.map(({ sub_thread_id, display_name }) => ({ sub_thread_id, display_name }));
     return res.status(200).json({ threads: threadsWithDisplayNames, success: true });
   }
 
-  const threads = await conversationDbService.getSubThreads(org_id, thread_id, bridge_id);
-  // sort the threads accroing to their hits in PG.
-  const sortedThreads = await conversationDbService.sortThreadsByHits(threads);
-  res.locals = { threads: sortedThreads, success: true };
+  // Single PG query: sub-threads with display names, ordered by latest activity
+  const threads = await conversationDbService.getSubThreadsWithActivity(org_id, thread_id, bridge_id);
+  res.locals = { threads, success: true };
   req.statusCode = 200;
   return next();
 };

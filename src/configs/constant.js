@@ -33,24 +33,27 @@ const bridge_ids = {
   template_validator: "69c134229df6d4d2d1dd2ae5"
 };
 
+// cd_ = can delete (DB-backed caches, safe to regenerate)
+// nd_ = no delete (Redis-ONLY stores or cost/metrics accumulators)
 const redis_keys = {
-  bridgeusedcost_: "bridgeusedcost_",
-  folderusedcost_: "folderusedcost_",
-  apikeyusedcost_: "apikeyusedcost_",
-  bridge_data_with_tools_: "bridge_data_with_tools_",
-  get_bridge_data_: "get_bridge_data_",
-  apikeylastused_: "apikeylastused_",
-  bridgelastused_: "bridgelastused_",
-  files_: "files_",
-  gpt_memory_: "gpt_memory_",
-  pdf_url_: "pdf_url_",
-  metrix_bridges_: "metrix_bridges_",
-  rate_limit_: "rate_limit_",
-  openai_batch_: "openai_batch_",
-  avg_response_time_: "avg_response_time_",
-  timezone_and_org_: "timezone_and_org_",
-  conversation_: "conversation_",
-  last_transffered_agent_: "last_transffered_agent_"
+  // Deletable — regenerable from DB
+  bridge_data_with_tools_: "cd_bridge_data_with_tools_",
+  get_bridge_data_: "cd_get_bridge_data_",
+  timezone_and_org_: "cd_timezone_and_org_",
+  conversation_: "cd_conversation_",
+  last_transffered_agent_: "cd_last_transffered_agent_",
+  // Protected — source of truth or cost accumulators
+  sub_thread_pending_: "nd_sub_thread_pending_",
+  bridgeusedcost_: "nd_bridgeusedcost_",
+  folderusedcost_: "nd_folderusedcost_",
+  apikeyusedcost_: "nd_apikeyusedcost_",
+  apikeylastused_: "nd_apikeylastused_",
+  bridgelastused_: "nd_bridgelastused_",
+  files_: "nd_files_",
+  gpt_memory_: "nd_gpt_memory_",
+  metrix_bridges_: "nd_metrix_bridges_",
+  rate_limit_: "nd_rate_limit_",
+  openai_batch_: "nd_openai_batch_"
 };
 
 const embed_cache = {
@@ -76,16 +79,39 @@ const prebuilt_prompt_bridge_id = [
   "generate_test_cases"
 ];
 
-const new_agent_service = {
-  openai: { model: "gpt-5-nano", default_name: "OpenAI" },
-  anthropic: { model: "claude-sonnet-4-6", default_name: "Anthropic" },
-  groq: { model: "openai/gpt-oss-120b", default_name: "Groq" },
-  open_router: { model: "openai/gpt-4o", default_name: "Open Router" },
-  mistral: { model: "mistral-small-latest", default_name: "Mistral" },
-  gemini: { model: "gemini-2.5-pro", default_name: "Gemini" },
-  grok: { model: "grok-4-fast", default_name: "Grok" },
-  deepgram: { model: "nova-3", default_name: "Deepgram" }
+import { servicesRegistry } from "../services/utils/loadServicesRegistry.js";
+
+// Helper function to capitalize service names for display
+const capitalize = (str) => {
+  if (!str) return "";
+  return str
+    .split(/[_-]/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 };
+
+const new_agent_service = new Proxy(
+  {},
+  {
+    get(target, prop) {
+      const serviceName = String(prop);
+      const resolved = servicesRegistry[serviceName];
+
+      if (!resolved) {
+        return undefined;
+      }
+
+      return {
+        model: resolved.default_model,
+        default_fallback_model: resolved.default_fallback_model,
+        default_name: resolved.service_name ? capitalize(resolved.service_name) : capitalize(serviceName)
+      };
+    },
+    ownKeys() {
+      return Object.keys(servicesRegistry);
+    }
+  }
+);
 
 export { collectionNames, bridge_ids, redis_keys, cost_types, prebuilt_prompt_bridge_id, new_agent_service, embed_cache };
 
@@ -101,10 +127,45 @@ export const AI_OPERATION_CONFIG = {
     getPrompt: (context) => context.bridge.configuration?.prompt || "",
     getVariables: (req, context) => {
       const prompt = context.bridge.configuration?.prompt;
-      const fields = prompt && typeof prompt === "object" ? { [context.variables.variable_key]: prompt[context.variables.variable_key] } : prompt;
+      const variable_key = context.variables?.variable_key;
+
+      let fields;
+      if (prompt && typeof prompt === "object") {
+        // New agent (role/goal/instruction) or embed with custom fields
+        if (variable_key) {
+          // Field-specific prompt helper — send only that key name
+          fields = [variable_key];
+        } else {
+          // Main prompt helper — send all key names as an array
+          fields = Object.keys(prompt);
+        }
+      } else {
+        // Old agent (single textarea) — send ["prompt"] as the key name only
+        fields = ["prompt"];
+      }
+
       return { query: req.body.query, fields };
     },
-    getMessage: () => "optimize the prompt according the data contain in the fields",
+    getMessage: (req, context) => {
+      const prompt = context.bridge.configuration?.prompt;
+      const variable_key = context.variables?.variable_key;
+
+      if (prompt && typeof prompt === "object") {
+        if (variable_key) {
+          // Field-specific prompt helper: always include the field even if empty
+          const value = prompt[variable_key] ?? "";
+          return `${variable_key}: ${value}`;
+        } else {
+          // Main prompt helper: include all fields even if their value is empty
+          return Object.entries(prompt)
+            .map(([k, v]) => `${k}: ${v ?? ""}`)
+            .join(", ");
+        }
+      }
+
+      // Old agent (single textarea): send as "prompt: <value>"
+      return `prompt: ${prompt ?? ""}`;
+    },
     successMessage: "Prompt optimized successfully"
   },
   generate_summary: {

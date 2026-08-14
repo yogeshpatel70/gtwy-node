@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import axios from "axios"; // Added for making HTTP requests
 import { getOrganizationById, validateCauthKey } from "../services/proxy.service.js";
-import { encryptString, reportLoginFailure } from "../services/utils/utility.service.js";
+import { encryptString, unknown_error_handler_alert } from "../services/utils/utility.service.js";
 import { createOrGetUser } from "../utils/proxy.utils.js";
 import configurationModel from "../mongoModel/Configuration.model.js";
 import mongoose from "mongoose";
@@ -84,7 +84,6 @@ const makeDataIfProxyTokenGiven = async (req) => {
   }
 
   const responseData = response.data;
-  console.log(responseData);
   return {
     ip: "9.255.0.55",
     user: {
@@ -299,7 +298,7 @@ const EmbeddecodeToken = async (req, res, next) => {
           req.IsEmbedUser = true;
           return next();
         }
-        reportLoginFailure("rag", token, "token verification failed");
+        unknown_error_handler_alert("rag", token, "token verification failed");
         return res.status(404).json({ message: "unauthorized user" });
       } else if (orgToken) {
         const checkToken = jwt.verify(token, orgToken);
@@ -312,13 +311,13 @@ const EmbeddecodeToken = async (req, res, next) => {
           return next();
         }
       }
-      reportLoginFailure("rag", token, "invalid token");
+      unknown_error_handler_alert("rag", token, "invalid token");
       return res.status(404).json({ message: "unauthorized user" });
     }
-    reportLoginFailure("rag", token, "invalid token");
+    unknown_error_handler_alert("rag", token, "invalid token");
     return res.status(401).json({ message: "unauthorized user " });
   } catch (err) {
-    reportLoginFailure("rag", token, err?.message || "token error");
+    unknown_error_handler_alert("rag", token, err?.message || "token error");
     return res.status(401).json({ message: "unauthorized user ", err });
   }
 };
@@ -347,6 +346,95 @@ const loginAuth = async (req, res, next) => {
   req.profile = await makeDataIfProxyTokenGiven(req);
 
   return next();
+};
+
+/**
+ * Combined middleware that handles both regular authorization tokens and embed tokens
+ * Tries to validate as embed token first, then falls back to regular auth
+ */
+const combinedAuthMiddleware = async (req, res, next) => {
+  try {
+    const token = req?.get("Authorization");
+    if (!token) {
+      return res.status(401).json({ message: "invalid token" });
+    }
+
+    const isBlacklisted = await findInCache(`blacklist:${token}`);
+    if (isBlacklisted) {
+      return res.status(401).json({ message: "token revoked" });
+    }
+
+    const decodedToken = jwt.decode(token);
+    if (!decodedToken) {
+      return res.status(401).json({ message: "invalid token" });
+    }
+
+    // Try embed token first if it has user_id, folder_id, org_id
+    if (decodedToken.user_id && decodedToken.folder_id && decodedToken.org_id) {
+      try {
+        if (req.headers.pauthkey || req.headers.pauthtoken) {
+          const res = await makeDataIfPauthKeyGiven(req);
+          if (res.org.id != decodedToken.org_id) {
+            return res.status(401).json({ message: "unauthorized user" });
+          }
+        } else {
+          return res.status(401).json({ message: "unauthorized user" });
+        }
+        const orgTokenFromDb = await getOrganizationById(decodedToken?.org_id);
+        const orgToken = orgTokenFromDb?.meta?.gtwyAccessToken;
+        if (orgToken) {
+          const checkToken = jwt.verify(token, orgToken);
+          if (checkToken) {
+            if (checkToken.user_id) checkToken.user_id = encryptString(checkToken.user_id);
+
+            const proxyUserData = await createOrGetUser(checkToken, decodedToken, orgTokenFromDb);
+            const { proxyResponse, name } = proxyUserData;
+
+            req.profile = {
+              user: {
+                id: proxyResponse.data.user.id,
+                name: name
+              },
+              org: {
+                id: proxyResponse.data.company.id,
+                name: orgTokenFromDb?.name
+              }
+            };
+            req.folder_id = decodedToken.folder_id || null;
+            req.IsEmbedUser = true;
+            return next();
+          }
+        }
+      } catch (embedError) {
+        console.log("Embed token verification failed, trying regular auth...", embedError?.message);
+        // Continue to regular auth
+      }
+    }
+
+    // Try regular authorization token
+    try {
+      req.profile = jwt.verify(token, process.env.SecretKey);
+      const userPermissions = req.profile?.user?.permissions || [];
+      const determinedRole = determineRoleFromPermissions(userPermissions, false);
+
+      if (!req.profile.user) {
+        req.profile.user = {};
+      }
+      req.profile.user.role_name = determinedRole;
+      req.profile.org.id = req.profile.org.id.toString();
+      req.user_id = req.profile?.user?.id ? req.profile.user.id.toString() : null;
+      req.role_name = req.profile?.user?.role_name || null;
+      req.org_id = req.profile.org.id;
+      req.ownerId = req.org_id;
+      return next();
+    } catch (authError) {
+      console.log("Regular auth token verification failed", authError?.message);
+      return res.status(401).json({ message: "unauthorized user" });
+    }
+  } catch (err) {
+    console.error("combinedAuthMiddleware error =>", err);
+    return res.status(401).json({ message: "unauthorized user" });
+  }
 };
 
 /**
@@ -582,6 +670,7 @@ export {
   EmbeddecodeToken,
   InternalAuth,
   loginAuth,
+  combinedAuthMiddleware,
   checkAgentAccessMiddleware,
   getAgentAccessRole,
   requireAdminRole

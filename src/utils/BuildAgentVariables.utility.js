@@ -29,6 +29,7 @@ function getReqOptVariablesInPrompt(prompt, variableState, variablePath) {
   // Determine status for prompt variables based on new structure
   const final = {};
   for (const varName of promptVars) {
+    if (varName === "pre_function") continue;
     if (variableState[varName] && typeof variableState[varName] === "object") {
       // Use the status from the variable_state structure
       const varStatus = variableState[varName].status || "optional";
@@ -42,6 +43,7 @@ function getReqOptVariablesInPrompt(prompt, variableState, variablePath) {
   // Add flattened variable_path keys as required
   const flattenedPaths = flattenValuesOnly(variablePath || {});
   for (const path of Object.keys(flattenedPaths)) {
+    if (path === "pre_function" || path.startsWith("pre_function.")) continue;
     final[path] = "required";
   }
 
@@ -49,30 +51,34 @@ function getReqOptVariablesInPrompt(prompt, variableState, variablePath) {
 }
 
 // Helper function to transform agent variables to tool call format
-function transformAgentVariableToToolCallFormat(inputData) {
+function transformAgentVariableToToolCallFormat(inputData, existingAgentVariables) {
   const fields = {};
   const requiredParams = [];
+  const existingFields = existingAgentVariables?.fields || {};
 
   function setNestedValue(obj, path, value, isRequired) {
     const parts = path.split(".");
     let current = obj;
+    let existingCurrent = existingFields; // For tracing existing properties
 
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
 
       if (!current[part]) {
+        const existingPart = existingCurrent?.[part] || {};
         current[part] = {
           type: "object",
-          description: "",
-          enum: [],
-          required_params: [],
-          parameter: {}
+          description: existingPart.description !== undefined ? existingPart.description : "",
+          enum: existingPart.enum !== undefined ? existingPart.enum : [],
+          required: existingPart.required !== undefined ? existingPart.required : [],
+          properties: {}
         };
-      } else if (!current[part].parameter) {
-        current[part].parameter = {};
+      } else if (!current[part].properties) {
+        current[part].properties = {};
       }
 
-      current = current[part].parameter;
+      current = current[part].properties;
+      existingCurrent = existingCurrent?.[part]?.properties;
     }
 
     const finalKey = parts[parts.length - 1];
@@ -85,25 +91,28 @@ function transformAgentVariableToToolCallFormat(inputData) {
       paramType = "boolean";
     }
 
+    // Check if it exists in existing current
+    const existingFinal = existingCurrent?.[finalKey] || {};
+
     current[finalKey] = {
-      type: paramType,
-      description: "",
-      enum: [],
-      required_params: []
+      type: existingFinal.type !== undefined ? existingFinal.type : paramType,
+      description: existingFinal.description !== undefined ? existingFinal.description : "",
+      enum: existingFinal.enum !== undefined ? existingFinal.enum : [],
+      required: existingFinal.required !== undefined ? existingFinal.required : []
     };
 
     if (isRequired) {
       for (let i = 0; i < parts.length - 1; i++) {
         let currentLevel = obj;
         for (let j = 0; j < i; j++) {
-          currentLevel = currentLevel[parts[j]].parameter;
+          currentLevel = currentLevel[parts[j]].properties;
         }
 
         const parentKey = parts[i];
         const childKey = parts[i + 1];
 
-        if (!currentLevel[parentKey].required_params.includes(childKey)) {
-          currentLevel[parentKey].required_params.push(childKey);
+        if (!currentLevel[parentKey].required.includes(childKey)) {
+          currentLevel[parentKey].required.push(childKey);
         }
       }
 
@@ -126,11 +135,13 @@ function transformAgentVariableToToolCallFormat(inputData) {
         paramType = "boolean";
       }
 
+      const existingVar = existingFields[key] || {};
+
       fields[key] = {
-        type: paramType,
-        description: "",
-        enum: [],
-        required_params: []
+        type: existingVar.type !== undefined ? existingVar.type : paramType,
+        description: existingVar.description !== undefined ? existingVar.description : "",
+        enum: existingVar.enum !== undefined ? existingVar.enum : [],
+        required: existingVar.required !== undefined ? existingVar.required : []
       };
 
       if (isRequired && !requiredParams.includes(key)) {
@@ -141,7 +152,7 @@ function transformAgentVariableToToolCallFormat(inputData) {
 
   return {
     fields: fields,
-    required_params: requiredParams
+    required: requiredParams
   };
 }
 

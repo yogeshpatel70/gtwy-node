@@ -26,6 +26,7 @@ async function saveConversationHistory(historyEntries) {
       message_id: data.message_id ?? null,
       sub_thread_id: data.sub_thread_id ?? null,
       thread_id: data.thread_id ?? null,
+      display_name: data.display_name ?? null,
       version_id: data.version_id ?? null,
       bridge_id: data.bridge_id ?? null,
       user_urls: data.user_urls ?? [],
@@ -43,7 +44,10 @@ async function saveConversationHistory(historyEntries) {
       finish_reason: data.finish_reason ?? null,
       parent_id: data.parent_id ?? null,
       child_id: data.child_id ?? null,
-      plans: data.plans ?? null
+      plans: data.plans ?? null,
+      testcase_id: data.testcase_id ?? null,
+      testcase_data: data.testcase_data ?? null,
+      created_at: data.created_at ?? new Date()
     });
   } catch (err) {
     logger.error(`Error saving conversation log (message_id=${data.message_id}): ${err.message}`);
@@ -88,7 +92,8 @@ async function saveOrchestratorHistory(orchestratorLogData) {
       firstAttemptError: orchestratorLogData.firstAttemptError ?? null,
       finish_reason: orchestratorLogData.finish_reason ?? null,
       agents_path: orchestratorLogData.agents_path ?? [],
-      plans: orchestratorLogData.plans ?? null
+      plans: orchestratorLogData.plans ?? null,
+      created_at: orchestratorLogData.created_at ?? new Date()
     });
   } catch (err) {
     logger.error(`Error saving orchestrator history (thread_id=${orchestratorLogData.thread_id}): ${err.message}`);
@@ -117,6 +122,7 @@ async function saveBatchHistory(entries) {
       message_id: data.message_id ?? null,
       sub_thread_id: data.sub_thread_id ?? null,
       thread_id: data.thread_id ?? null,
+      display_name: data.display_name ?? null,
       version_id: data.version_id ?? null,
       bridge_id: data.bridge_id ?? null,
       user_urls: data.user_urls ?? [],
@@ -131,7 +137,8 @@ async function saveBatchHistory(entries) {
       variables: data.variables ?? null,
       latency: null,
       batch_data: data.batch_data ?? null,
-      plans: data.plans ?? null
+      plans: data.plans ?? null,
+      created_at: data.created_at ?? new Date()
     }));
 
     await models.pg.conversation_logs.bulkCreate(rows);
@@ -192,7 +199,9 @@ const UPDATABLE_COLS = new Set([
   "firstAttemptError",
   "finish_reason",
   "plans",
-  "prompt"
+  "prompt",
+  "testcase_id",
+  "testcase_data"
 ]);
 
 async function updateConversationHistory(updateData) {

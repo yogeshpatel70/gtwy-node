@@ -2,6 +2,7 @@ import ConfigurationServices from "../db_services/configuration.service.js";
 import folderService from "../db_services/folder.service.js";
 import FolderModel from "../mongoModel/GtwyEmbed.model.js";
 import configurationModel from "../mongoModel/Configuration.model.js";
+import bridgeVersionModel from "../mongoModel/BridgeVersion.model.js";
 import { createProxyToken, getOrganizationById, updateOrganizationData } from "../services/proxy.service.js";
 import { generateIdentifier } from "../services/utils/utility.service.js";
 import { cleanupCache } from "../services/utils/redis.utils.js";
@@ -9,6 +10,7 @@ import { deleteInCache, findInCache } from "../cache_service/index.js";
 import { cost_types, redis_keys, embed_cache } from "../configs/constant.js";
 import { generateAuthToken } from "../services/utils/utility.service.js";
 import jwt from "jsonwebtoken";
+import { validateJsonSchemaConfiguration } from "../services/utils/common.utils.js";
 
 const embedLogin = async (req, res) => {
   const { name: embeduser_name, email: embeduser_email } = req.Embed;
@@ -140,11 +142,37 @@ const updateEmbed = async (req, res, next) => {
     } = req.body;
     const org_id = req.profile.org.id;
 
+    if (config) {
+      const { isValid, errorMessage } = validateJsonSchemaConfiguration(config);
+      if (!isValid) {
+        res.locals = { success: false, message: errorMessage };
+        req.statusCode = 400;
+        return next();
+      }
+    }
+
     const folder = await FolderModel.findOne({ _id: folder_id, org_id });
     if (!folder) {
       res.locals = { success: false, message: "Folder not found" };
       req.statusCode = 404;
       return next();
+    }
+
+    const newTools = tools_id !== undefined ? tools_id : config?.tools_id;
+    if (newTools !== undefined && Array.isArray(newTools) && folder) {
+      const oldTools = folder.config?.tools_id || [];
+      const removedTools = oldTools.filter((id) => !newTools.includes(id));
+
+      if (removedTools.length > 0) {
+        const unsetFields = {};
+        for (const toolId of removedTools) {
+          unsetFields[`embed_override.tools.${toolId}`] = "";
+        }
+        await Promise.all([
+          bridgeVersionModel.updateMany({ folder_id: folder_id }, { $unset: unsetFields }),
+          configurationModel.updateMany({ folder_id: folder_id }, { $unset: unsetFields })
+        ]);
+      }
     }
 
     // Find all bridge objects using folder_id and delete from cache
@@ -259,9 +287,10 @@ const getEmbedDataByUserId = async (req, res, next) => {
   try {
     const user_id = req.profile.user.id;
     const org_id = req.profile.org.id;
+    const folder_id = req?.Embed?.folder_id;
     const { agent_id } = req.query;
 
-    const data = await ConfigurationServices.getAgentsByUserId(org_id, user_id, agent_id);
+    const data = await ConfigurationServices.getAgentsByUserId(org_id, user_id, agent_id, folder_id);
 
     res.locals = {
       success: true,

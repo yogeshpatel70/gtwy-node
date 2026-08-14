@@ -4,13 +4,14 @@ import bridgeVersionModel from "../mongoModel/BridgeVersion.model.js";
 import configurationModel from "../mongoModel/Configuration.model.js";
 import apiCallModel from "../mongoModel/ApiCall.model.js";
 import apikeyCredentialsModel from "../mongoModel/Api.model.js"; // Check if this is correct model for apikeycredentials
-import testcasesHistoryModel from "../mongoModel/TestcaseHistory.model.js";
 import conversationDbService from "./conversation.service.js";
 import { deleteInCache } from "../cache_service/index.js";
+import { purgeAgentCache } from "../services/utils/redis.utils.js";
 import { callAiMiddleware } from "../services/utils/aiCall.utils.js";
-import { redis_keys, bridge_ids } from "../configs/constant.js";
+import { redis_keys, bridge_ids, AI_OPERATION_CONFIG } from "../configs/constant.js";
 import { getReqOptVariablesInPrompt, transformAgentVariableToToolCallFormat } from "../utils/agentVariables.js";
 import { convertPromptToString } from "../utils/promptWrapper.utils.js";
+import { executeAiOperation } from "../services/utils/utility.service.js";
 const ObjectId = mongoose.Types.ObjectId;
 
 async function getVersion(version_id) {
@@ -64,11 +65,6 @@ async function updateAgents(agent_id, data, version_id = null) {
       result = await configurationModel.findOneAndUpdate({ _id: agent_id }, updateQuery, { new: true });
     }
 
-    const cacheKeysToDelete = _buildCacheKeys(version_id, agent_id || result.parent_id, { bridges: [], versions: [] }, [], result.org_id);
-
-    if (cacheKeysToDelete.length > 0) {
-      await deleteInCache(cacheKeysToDelete);
-    }
     return result;
   } catch (error) {
     console.error("Error updating agents:", error);
@@ -144,7 +140,7 @@ async function makeQuestion(parent_id, prompt, functions, save = false) {
     for (const key in functions) {
       filteredFunctions[functions[key].title] = functions[key].description;
     }
-    prompt += "\nFunctionalities available\n" + JSON.stringify(filteredFunctions);
+    prompt = `This is the prompt of the target agent:\n ${prompt}\n\nFunctionalities available:\n ${JSON.stringify(filteredFunctions)}`;
   }
 
   const expectedQuestions = await callAiMiddleware(prompt, bridge_ids["make_question"]);
@@ -225,12 +221,6 @@ async function _cleanupApikeyCredentials(version_id) {
   }
 }
 
-async function _cleanupTestcaseHistory(version_id) {
-  if (testcasesHistoryModel) {
-    await testcasesHistoryModel.deleteMany({ version_id: version_id });
-  }
-}
-
 function _collectRagCacheKeys(version_doc) {
   const cacheKeys = new Set();
   const docIds = version_doc.doc_ids || [];
@@ -255,22 +245,22 @@ function _mergeImpactedIds(...impacts) {
 function _buildCacheKeys(version_id, parent_id, impacted_ids, extra_keys, org_id) {
   const cacheKeys = new Set([
     `${redis_keys.get_bridge_data_}${org_id}_${version_id}`,
-    `${redis_keys.bridge_data_with_tools_}${org_id}_${version_id}`
+    `${redis_keys.bridge_data_with_tools_}${org_id}_version_${version_id}`
   ]);
 
   if (parent_id) {
     cacheKeys.add(`${redis_keys.get_bridge_data_}${org_id}_${parent_id}`);
-    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_${parent_id}`);
+    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_bridge_${parent_id}`);
   }
 
   impacted_ids.bridges.forEach((id) => {
     cacheKeys.add(`${redis_keys.get_bridge_data_}${org_id}_${id}`);
-    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_${id}`);
+    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_bridge_${id}`);
   });
 
   impacted_ids.versions.forEach((id) => {
     cacheKeys.add(`${redis_keys.get_bridge_data_}${org_id}_${id}`);
-    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_${id}`);
+    cacheKeys.add(`${redis_keys.bridge_data_with_tools_}${org_id}_version_${id}`);
   });
 
   extra_keys.forEach((key) => cacheKeys.add(key));
@@ -320,6 +310,17 @@ function calculatePromptTokens(prompt, tools) {
   }
 }
 
+async function generateAgentSummaryInBackground(parentId, org_id, version_id) {
+  try {
+    const summaryResult = await executeAiOperation({ body: { version_id } }, org_id, AI_OPERATION_CONFIG.generate_summary);
+    const summary = summaryResult?.result;
+    const bridgeSummary = typeof summary === "string" ? summary : summary ? JSON.stringify(summary) : "";
+    await configurationModel.updateOne({ _id: parentId }, { $set: { bridge_summary: bridgeSummary } });
+  } catch (error) {
+    console.error(`Error generating agent summary for version ${version_id}:`, error);
+  }
+}
+
 async function getPromptEnhancerPercentage(parentId, prompt) {
   try {
     if (!prompt) return null;
@@ -330,7 +331,12 @@ async function getPromptEnhancerPercentage(parentId, prompt) {
     // Update the document in the configurationModel
     await configurationModel.updateOne(
       { _id: parentId },
-      { $set: { prompt_enhancer_percentage: prompt_enhancer_percentage, criteria_check: criteria_check } }
+      {
+        $set: {
+          "ai_updates.prompt_enhancer_percentage": prompt_enhancer_percentage,
+          "ai_updates.criteria_check": criteria_check
+        }
+      }
     );
 
     return { prompt_enhancer_percentage, criteria_check };
@@ -362,7 +368,6 @@ async function deleteAgentVersion(org_id, version_id) {
 
   const apiCallsImpacted = await _cleanupApiCalls(version_id);
   await _cleanupApikeyCredentials(version_id);
-  await _cleanupTestcaseHistory(version_id);
 
   const deleteResult = await bridgeVersionModel.deleteOne({ _id: version_id, org_id });
   if (deleteResult.deletedCount === 0) throw new Error("Failed to delete version");
@@ -378,7 +383,7 @@ async function deleteAgentVersion(org_id, version_id) {
   return { success: true, message: "Version deleted successfully" };
 }
 
-async function publish(org_id, version_id, user_id) {
+async function publish(org_id, version_id, user_id, generate_summary = false) {
   const versionDataResult = await getVersionWithTools(version_id);
   if (!versionDataResult || !versionDataResult.bridges) throw new Error("Version data not found");
 
@@ -394,7 +399,7 @@ async function publish(org_id, version_id, user_id) {
 
   // Extract agent variables logic
   const prompt = convertPromptToString(getVersionData.configuration?.prompt || "");
-  const variableState = getVersionData.variables_state || {};
+  const variableState = getVersionData.agent_info?.variables_state || {};
   const variablePath = getVersionData.variables_path || {};
 
   if (Array.isArray(getVersionData.pre_tools)) {
@@ -407,7 +412,10 @@ async function publish(org_id, version_id, user_id) {
   }
 
   const agentVariables = getReqOptVariablesInPrompt(prompt, variableState, variablePath);
-  const transformedAgentVariables = transformAgentVariableToToolCallFormat(agentVariables);
+  const existingAgentVariables = getVersionData.agent_info?.agent_variables || parentConfiguration.agent_info?.agent_variables;
+  const transformedAgentVariables = transformAgentVariableToToolCallFormat(agentVariables, existingAgentVariables);
+
+  const folder_id = parentConfiguration.folder_id;
 
   // Prepare updated configuration
   const updatedConfiguration = { ...parentConfiguration, ...getVersionData };
@@ -415,30 +423,47 @@ async function publish(org_id, version_id, user_id) {
   updatedConfiguration.published_version_id = publishedVersionId;
   delete updatedConfiguration.apiCalls; // Remove looked-up data
 
-  const chatbotAutoAnswers = parentConfiguration.chatbot_auto_answers;
+  if (folder_id !== undefined) {
+    updatedConfiguration.folder_id = folder_id;
+  }
 
-  // Restore the chatbot_auto_answers value from parent
-  if (chatbotAutoAnswers !== undefined) {
-    updatedConfiguration.chatbot_auto_answers = chatbotAutoAnswers;
+  const publicAgentConfig = parentConfiguration.settings?.publicAgentConfig;
+  const editAccess = parentConfiguration.settings?.editAccess;
+  const environment_config = parentConfiguration.settings?.environment_config;
+
+  // Restore the settings.publicAgentConfig value from parent
+  if (publicAgentConfig !== undefined) {
+    updatedConfiguration.settings.publicAgentConfig = publicAgentConfig;
+  }
+  // Restore the editAccess value from parent
+  if (editAccess !== undefined) {
+    updatedConfiguration.settings.editAccess = editAccess;
+  }
+
+  // Restore the settings.environment_config value from parent
+  if (environment_config !== undefined) {
+    updatedConfiguration.settings.environment_config = environment_config;
   }
 
   if (updatedConfiguration.function_ids) {
-    updatedConfiguration.function_ids = updatedConfiguration.function_ids.map((fid) => new ObjectId(fid));
+    updatedConfiguration.function_ids = updatedConfiguration.function_ids.map((fid) => fid.toString());
   }
 
-  // Update connected_agent_details with agent variables
-  updatedConfiguration.connected_agent_details = {
-    ...(updatedConfiguration.connected_agent_details || {}),
+  // Update agent_info with agent_variables (flattened structure)
+  updatedConfiguration.agent_info = updatedConfiguration.agent_info || {};
+  updatedConfiguration.agent_info = {
+    ...updatedConfiguration.agent_info,
+    description: parentConfiguration.agent_info.description,
     agent_variables: {
       fields: transformedAgentVariables.fields,
-      required_params: transformedAgentVariables.required_params
+      required: transformedAgentVariables.required
     }
   };
 
   const tools = getVersionData.apiCalls;
 
   // Calculate token count and include in transaction update (avoids a separate DB write)
-  updatedConfiguration.prompt_total_tokens = calculatePromptTokens(prompt, tools);
+  updatedConfiguration.agent_info.prompt_total_tokens = calculatePromptTokens(prompt, tools);
 
   // Transaction
   const session = await mongoose.startSession();
@@ -461,14 +486,22 @@ async function publish(org_id, version_id, user_id) {
   }
 
   // Background tasks (after transaction to avoid write conflicts on configurationModel)
-  makeQuestion(parentId, prompt, tools, true).catch(console.error);
+  // If the version being published already has static starterQuestions, skip AI generation –
+  // they are already persisted on the bridge via the updatedConfiguration spread above.
+  const versionStarterQuestions = getVersionData.starterQuestion;
+  if (!Array.isArray(versionStarterQuestions) || versionStarterQuestions.length === 0) {
+    makeQuestion(parentId, prompt, tools, true).catch(console.error);
+  }
   getPromptEnhancerPercentage(parentId, prompt).catch(console.error);
-  // deleteCurrentTestcaseHistory(version_id).catch(console.error); // Implement if needed
+  if (generate_summary) {
+    generateAgentSummaryInBackground(parentId, org_id, version_id).catch(console.error);
+  }
 
   const cacheKeysToDelete = _buildCacheKeys(publishedVersionId, parentId, { bridges: [], versions: [] }, [], org_id);
   if (cacheKeysToDelete.length > 0) {
     await deleteInCache(cacheKeysToDelete);
   }
+  await purgeAgentCache({ org_id, bridge_id: parentId, agent_config: parentConfiguration });
 
   await conversationDbService.addBulkUserEntries([
     {
@@ -485,7 +518,8 @@ async function publish(org_id, version_id, user_id) {
 
 async function getAllConnectedAgents(id, org_id, type) {
   const agentsMap = {};
-  const visited = new Set();
+  const visitedDownstream = new Set();
+  const visitedUpstream = new Set();
 
   async function fetchDocument(docId, docType) {
     try {
@@ -497,9 +531,14 @@ async function getAllConnectedAgents(id, org_id, type) {
         doc = await bridgeVersionModel.findOne({ _id: docId, org_id }).lean();
         actualType = "version";
       } else {
-        // Default to bridge if type is not specified
+        // Try bridge first, then version
         doc = await configurationModel.findOne({ _id: docId, org_id }).lean();
-        actualType = "bridge";
+        if (doc) {
+          actualType = "bridge";
+        } else {
+          doc = await bridgeVersionModel.findOne({ _id: docId, org_id }).lean();
+          actualType = doc ? "version" : null;
+        }
       }
 
       return { doc, type: actualType };
@@ -508,8 +547,111 @@ async function getAllConnectedAgents(id, org_id, type) {
     }
   }
 
-  async function processAgent(agentId, parentIds = [], docType = null) {
-    if (visited.has(agentId)) {
+  // Find all agents (bridges and versions) that have the given agentId in their connected_agents
+  async function findParentAgents(agentId) {
+    const parentAgents = [];
+
+    // Search in bridges (configurationModel)
+    const parentBridges = await configurationModel
+      .find({
+        org_id,
+        $or: [{ connected_agents: { $exists: true } }]
+      })
+      .lean();
+
+    for (const bridge of parentBridges) {
+      const connectedAgents = bridge.connected_agents || {};
+      for (const [, info] of Object.entries(connectedAgents)) {
+        if (!info) continue;
+        const childId = info.version_id || info.bridge_id;
+        if (childId === agentId) {
+          parentAgents.push({ id: bridge._id.toString(), type: "bridge" });
+          break;
+        }
+      }
+    }
+
+    // Search in versions (bridgeVersionModel)
+    const parentVersions = await bridgeVersionModel
+      .find({
+        org_id,
+        $or: [{ connected_agents: { $exists: true } }]
+      })
+      .lean();
+
+    for (const version of parentVersions) {
+      const connectedAgents = version.connected_agents || {};
+      for (const [, info] of Object.entries(connectedAgents)) {
+        if (!info) continue;
+        const childId = info.version_id || info.bridge_id;
+        if (childId === agentId) {
+          parentAgents.push({ id: version._id.toString(), type: "version" });
+          break;
+        }
+      }
+    }
+
+    return parentAgents;
+  }
+
+  // Process upstream (parent agents) recursively
+  async function processUpstream(agentId, childIds = [], docType = null) {
+    if (visitedUpstream.has(agentId)) {
+      // Update childAgents if already visited
+      if (childIds && agentsMap[agentId]) {
+        childIds.forEach((cid) => {
+          if (!agentsMap[agentId].childAgents.includes(cid)) {
+            agentsMap[agentId].childAgents.push(cid);
+          }
+        });
+      }
+      return;
+    }
+
+    visitedUpstream.add(agentId);
+    const { doc, type: actualType } = await fetchDocument(agentId, docType);
+
+    if (!doc) {
+      return;
+    }
+
+    const agentName = doc.name || `Agent_${agentId}`;
+    const agent_info = doc.agent_info || {};
+    const threadId = agent_info.thread_id || false;
+    const description = agent_info.description;
+
+    if (!agentsMap[agentId]) {
+      agentsMap[agentId] = {
+        agent_name: agentName,
+        parentAgents: [],
+        childAgents: childIds || [],
+        thread_id: threadId,
+        document_type: actualType
+      };
+      if (description) agentsMap[agentId].description = description;
+    } else {
+      // Merge childAgents
+      childIds.forEach((cid) => {
+        if (!agentsMap[agentId].childAgents.includes(cid)) {
+          agentsMap[agentId].childAgents.push(cid);
+        }
+      });
+    }
+
+    // Find parents of this agent
+    const parents = await findParentAgents(agentId);
+    for (const parent of parents) {
+      if (!agentsMap[agentId].parentAgents.includes(parent.id)) {
+        agentsMap[agentId].parentAgents.push(parent.id);
+      }
+      await processUpstream(parent.id, [agentId], parent.type);
+    }
+  }
+
+  // Process downstream (child agents) recursively
+  async function processDownstream(agentId, parentIds = [], docType = null) {
+    if (visitedDownstream.has(agentId)) {
+      // Update parentAgents if already visited
       if (parentIds && agentsMap[agentId]) {
         parentIds.forEach((pid) => {
           if (!agentsMap[agentId].parentAgents.includes(pid)) {
@@ -520,7 +662,7 @@ async function getAllConnectedAgents(id, org_id, type) {
       return;
     }
 
-    visited.add(agentId);
+    visitedDownstream.add(agentId);
     const { doc, type: actualType } = await fetchDocument(agentId, docType);
 
     if (!doc) {
@@ -532,15 +674,25 @@ async function getAllConnectedAgents(id, org_id, type) {
     const threadId = connectedAgentDetails.thread_id || false;
     const description = connectedAgentDetails.description;
 
-    agentsMap[agentId] = {
-      agent_name: agentName,
-      parentAgents: parentIds || [],
-      childAgents: [],
-      thread_id: threadId,
-      document_type: actualType
-    };
-    if (description) agentsMap[agentId].description = description;
+    if (!agentsMap[agentId]) {
+      agentsMap[agentId] = {
+        agent_name: agentName,
+        parentAgents: parentIds || [],
+        childAgents: [],
+        thread_id: threadId,
+        document_type: actualType
+      };
+      if (description) agentsMap[agentId].description = description;
+    } else {
+      // Merge parentAgents
+      parentIds.forEach((pid) => {
+        if (!agentsMap[agentId].parentAgents.includes(pid)) {
+          agentsMap[agentId].parentAgents.push(pid);
+        }
+      });
+    }
 
+    // Process children
     const connectedAgents = doc.connected_agents || {};
 
     for (const [, info] of Object.entries(connectedAgents)) {
@@ -554,12 +706,17 @@ async function getAllConnectedAgents(id, org_id, type) {
           agentsMap[agentId].childAgents.push(childId);
         }
         const childType = info.version_id ? "version" : "bridge";
-        await processAgent(childId, [agentId], childType);
+        await processDownstream(childId, [agentId], childType);
       }
     }
   }
 
-  await processAgent(id, null, type);
+  // Start by processing the initial agent in both directions
+  // First, process upstream to find all parent agents
+  await processUpstream(id, [], type);
+
+  // Then, process downstream to find all child agents
+  await processDownstream(id, [], type);
 
   return agentsMap;
 }

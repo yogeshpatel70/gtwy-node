@@ -4,9 +4,9 @@ const createTestcaseSchema = Joi.object({
   bridge_id: Joi.string().required().messages({
     "any.required": "bridge_id is required"
   }),
-  conversation: Joi.array().required().messages({
-    "any.required": "conversation is required"
-  }),
+  name: Joi.string().allow("").optional(),
+  conversation: Joi.array().optional(),
+  message_id: Joi.string().optional(),
   type: Joi.string().required().messages({
     "any.required": "type is required"
   }),
@@ -15,7 +15,9 @@ const createTestcaseSchema = Joi.object({
   }),
   matching_type: Joi.string().required().messages({
     "any.required": "matching_type is required"
-  })
+  }),
+  variables: Joi.object().optional(),
+  user_urls: Joi.array().optional()
 }).unknown(true);
 
 const testcaseIdSchema = Joi.object({
@@ -24,16 +26,32 @@ const testcaseIdSchema = Joi.object({
   })
 }).unknown(true);
 
-const bridgeIdSchema = Joi.object({
-  bridge_id: Joi.string().required().messages({
-    "any.required": "bridge_id is required"
+const agentIdSchema = Joi.object({
+  agent_id: Joi.string().required().messages({
+    "any.required": "agent_id is required"
+  })
+}).unknown(true);
+
+const getAllTestcasesQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).optional().default(1).messages({
+    "number.base": "page must be a number",
+    "number.integer": "page must be an integer",
+    "number.min": "page must be at least 1"
+  }),
+  limit: Joi.number().integer().min(1).max(100).optional().default(30).messages({
+    "number.base": "limit must be a number",
+    "number.integer": "limit must be an integer",
+    "number.min": "limit must be at least 1",
+    "number.max": "limit must be at most 100"
+  }),
+  keyword: Joi.string().allow("").optional().messages({
+    "string.base": "keyword must be a string"
   })
 }).unknown(true);
 
 const testcaseUpdateSchema = Joi.object({
-  conversation: Joi.array().required().messages({
-    "any.required": "conversation is required"
-  }),
+  name: Joi.string().allow("").optional(),
+  conversation: Joi.array().optional(),
   type: Joi.string().required().messages({
     "any.required": "type is required"
   }),
@@ -45,4 +63,11 @@ const testcaseUpdateSchema = Joi.object({
   })
 }).unknown(true);
 
-export { createTestcaseSchema, testcaseIdSchema, bridgeIdSchema, testcaseUpdateSchema };
+const bulkDeleteTestcaseSchema = Joi.object({
+  testCaseIds: Joi.array().items(Joi.string().required()).min(1).required().messages({
+    "array.min": "testCaseIds array must contain at least one testcase id",
+    "any.required": "testCaseIds array is required"
+  })
+}).unknown(true);
+
+export { createTestcaseSchema, testcaseIdSchema, agentIdSchema, testcaseUpdateSchema, getAllTestcasesQuerySchema, bulkDeleteTestcaseSchema };

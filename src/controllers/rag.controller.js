@@ -400,10 +400,7 @@ export const deleteResourceFromCollection = async (req, res, next) => {
         success: false,
         message: "Cannot delete resource as it is currently in use",
         isInUse: true,
-        usageDetails: {
-          agents: usageCheck.agents,
-          versions: usageCheck.versions
-        }
+        usage: usageCheck.usage
       };
       req.statusCode = 400;
       return next();
@@ -546,6 +543,46 @@ export const getResourcesByCollectionAndOwner = async (req, res, next) => {
     res.locals = {
       success: false,
       error: error.response?.data?.message || error.message
+    };
+    req.statusCode = error.response?.status || 500;
+    return next();
+  }
+};
+
+export const deleteResourcesByCollectionAndOwner = async (req, res, next) => {
+  try {
+    const { id: collectionId } = req.params;
+    const { ownerId } = req.query;
+
+    const hippocampusUrl = "http://hippocampus.gtwy.ai";
+    const hippocampusApiKey = process.env.HIPPOCAMPUS_API_KEY;
+
+    // Build URL with optional ownerId query param
+    let deleteUrl = `${hippocampusUrl}/collection/${collectionId}/resources`;
+    if (ownerId) {
+      deleteUrl += `?ownerId=${ownerId}`;
+    }
+
+    // Call Hippocampus API to delete resources by collection (and optionally ownerId)
+    const response = await axios.delete(deleteUrl, {
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": hippocampusApiKey
+      }
+    });
+
+    res.locals = {
+      success: true,
+      message: "Resources deleted successfully",
+      data: response.data
+    };
+    req.statusCode = 200;
+    return next();
+  } catch (error) {
+    console.error("Error deleting resources by collection and owner:", error);
+    res.locals = {
+      success: false,
+      error: error.response?.data || error.message
     };
     req.statusCode = error.response?.status || 500;
     return next();

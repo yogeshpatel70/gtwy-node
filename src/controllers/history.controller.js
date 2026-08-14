@@ -64,16 +64,20 @@ const getBatchConversationLogsCount = async (req, res, next) => {
 const getConversationLogs = async (req, res, next) => {
   const org_id = req.profile.org.id; // From middleware
   const { agent_id, thread_id, sub_thread_id } = req.params;
-  const pageNum = req.query.page || 1;
-  const limitNum = req.query.limit || 30;
+  const pageNum = parseInt(req.query.page) || 1;
+  const limitNum = parseInt(req.query.limit) || 30;
+  const version_id = req.query.version_id || null;
+  const testcase_id = req.query.testcase_id || null;
 
   // Get conversation logs
-  const result = await findConversationLogsByIds(org_id, agent_id, thread_id, sub_thread_id, pageNum, limitNum);
+  const result = await findConversationLogsByIds(org_id, agent_id, thread_id, sub_thread_id, pageNum, limitNum, version_id, testcase_id);
 
   if (result.success) {
     res.locals = {
       data: result.data,
-      success: true
+      success: true,
+      totalEntries: result.totalEntries,
+      totalPages: result.totalPages
     };
     req.statusCode = 200;
     return next();
@@ -98,10 +102,9 @@ const getRecentThreads = async (req, res, next) => {
   // Extract query parameters
   const pageNum = parseInt(req.query.page) || 1;
   const limitNum = parseInt(req.query.limit) || 30;
-  const user_feedback = req.query.user_feedback || "all";
   const error = req.query.error || "false";
   const version_id = req.query.version_id;
-  const type = req.query.type;
+  const testcase_id = req.query.testcase_id || null;
 
   // Extract search filters (supports both search and regular listing)
   const filters = {
@@ -117,7 +120,7 @@ const getRecentThreads = async (req, res, next) => {
   };
 
   // Get recent threads with search functionality built-in
-  const result = await findRecentThreadsByBridgeId(org_id, agent_id, filters, user_feedback, error, pageNum, limitNum, version_id, type);
+  const result = await findRecentThreadsByBridgeId(org_id, agent_id, filters, error, pageNum, limitNum, version_id, testcase_id);
 
   if (result.success) {
     res.locals = {
@@ -148,40 +151,50 @@ const getRecursiveAgentHistory = async (req, res, next) => {
       return next();
     }
 
-    const resolveMessage = async (msgId) => {
+    const resolveMessage = async (msgId, currentAgentId) => {
       if (!msgId) return null;
 
-      const messageRecord = await findHistoryByMessageId(msgId);
+      const messageRecord = await findHistoryByMessageId(msgId, currentAgentId);
       if (!messageRecord) return null;
 
       const message = messageRecord?.toJSON ? messageRecord.toJSON() : messageRecord;
 
-      if (!Array.isArray(message.tools_call_data)) {
-        return message;
-      }
+      const processTool = async (tool) => {
+        const metadata = tool?.data?.metadata;
+        if (metadata?.type === "agent" && metadata?.message_id) {
+          const childAgentId = metadata.agent_id || tool.bridge_id || tool.agent_id;
+          const fullChildMessage = await resolveMessage(metadata.message_id, childAgentId);
 
-      for (let i = 0; i < message.tools_call_data.length; i++) {
-        const toolGroup = message.tools_call_data[i];
+          if (fullChildMessage) {
+            fullChildMessage.name = tool?.name || null;
+            if (!tool.data) {
+              tool.data = {};
+            }
+            tool.data.response = fullChildMessage;
+            tool.response = fullChildMessage;
+          }
+        }
+      };
 
-        for (const key of Object.keys(toolGroup)) {
-          const tool = toolGroup[key];
-          const metadata = tool?.data?.metadata;
-
-          if (metadata?.type === "agent" && metadata?.message_id) {
-            const fullChildMessage = await resolveMessage(metadata.message_id);
-
-            if (fullChildMessage) {
-              fullChildMessage.name = tool?.name || null;
-              toolGroup[key] = fullChildMessage;
+      if (Array.isArray(message.tools_call_data)) {
+        for (let i = 0; i < message.tools_call_data.length; i++) {
+          const toolGroup = message.tools_call_data[i];
+          if (toolGroup && typeof toolGroup === "object") {
+            for (const key of Object.keys(toolGroup)) {
+              await processTool(toolGroup[key]);
             }
           }
+        }
+      } else if (message.tools_call_data && typeof message.tools_call_data === "object") {
+        for (const key of Object.keys(message.tools_call_data)) {
+          await processTool(message.tools_call_data[key]);
         }
       }
 
       return message;
     };
 
-    const rootMessage = await findHistoryByMessageId(message_id);
+    const rootMessage = await findHistoryByMessageId(message_id, agent_id);
 
     if (!rootMessage) {
       res.locals = { success: false, message: "Message not found" };
@@ -204,7 +217,7 @@ const getRecursiveAgentHistory = async (req, res, next) => {
       return next();
     }
 
-    const finalHistory = await resolveMessage(message_id);
+    const finalHistory = await resolveMessage(message_id, agent_id);
 
     res.locals = {
       success: true,
@@ -224,16 +237,42 @@ const getRecursiveAgentHistory = async (req, res, next) => {
   }
 };
 
+const getHistoryByMessageId = async (req, res, next) => {
+  try {
+    const record = await findHistoryByMessageId(req.params.message_id);
+
+    if (!record) {
+      res.locals = { success: false, message: "Message not found" };
+      req.statusCode = 404;
+      return next();
+    }
+
+    const message = record?.toJSON ? record.toJSON() : record;
+    res.locals = { success: true, data: message };
+    req.statusCode = 200;
+    return next();
+  } catch (error) {
+    console.error("getHistoryByMessageId error:", error);
+    res.locals = { success: false, message: "Failed to fetch history", error: error.message };
+    req.statusCode = 500;
+    return next();
+  }
+};
+
 const getChatbotThreadHistory = async (req, res, next) => {
   const page = parseInt(req.query.pageNo) || 1;
   const pageSize = parseInt(req.query.limit) || 30;
-  const { thread_id, bridge_slugName } = req.params;
+  let { thread_id, bridge_slugName } = req.params;
   const { sub_thread_id = thread_id } = req.query;
   let org_id = req?.profile?.org?.id || req?.profile?.org_id;
 
-  const bridge = req.chatBot?.ispublic
-    ? await configurationService.getAgentByUrlSlugname(bridge_slugName)
-    : await configurationService.getAgentIdBySlugname(org_id, bridge_slugName);
+  if (req.chatBot?.ispublic && bridge_slugName?.includes("::")) {
+    const [orgIdFromSlug, actualSlugName] = bridge_slugName.split("::");
+    org_id = orgIdFromSlug;
+    bridge_slugName = actualSlugName;
+  }
+
+  const bridge = await configurationService.getAgentIdBySlugname(org_id, bridge_slugName);
 
   const bridge_id = bridge?._id?.toString();
   const starterQuestion = !bridge?.IsstarterQuestionEnable ? [] : bridge?.starterQuestion;
@@ -259,6 +298,7 @@ export default {
   getConversationLogs,
   getRecentThreads,
   getRecursiveAgentHistory,
+  getHistoryByMessageId,
   getChatbotThreadHistory,
   getBatchConversationLogs,
   getBatchConversationLogsCount

@@ -76,8 +76,10 @@ const callAi = {
         otherwise: Joi.forbidden()
       }),
       variables: Joi.alternatives().conditional("type", {
-        is: "optimize_prompt",
-        then: Joi.object().required(),
+        switch: [
+          { is: "optimize_prompt", then: Joi.object().required() },
+          { is: "improve_prompt", then: Joi.object().required() }
+        ],
         otherwise: Joi.forbidden()
       }),
       example_json: Joi.alternatives().conditional("type", {
@@ -105,10 +107,29 @@ const generateToken = {
     .unknown(true)
 };
 
+const checkLatency = {
+  body: Joi.object()
+    .keys({
+      type: Joi.string().valid("single", "bulk", "load").required(),
+      count: Joi.when("type", {
+        is: "load",
+        then: Joi.number().integer().min(1).required(),
+        otherwise: Joi.forbidden()
+      }),
+      webhook: Joi.when("type", {
+        is: Joi.valid("load", "bulk"),
+        then: Joi.string().uri().required(),
+        otherwise: Joi.forbidden()
+      })
+    })
+    .unknown(false)
+};
+
 export default {
   clearRedisCache,
   getRedisCache,
   callAi,
   generateToken,
-  getAffiliateEmbedToken
+  getAffiliateEmbedToken,
+  checkLatency
 };
